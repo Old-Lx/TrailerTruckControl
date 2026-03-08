@@ -1,0 +1,96 @@
+'us_semi': {
+    'name': 'T-Series', 
+    'configurations': {
+        't83s_tanker': {'model_key': 'us_semi', 'name': 'T-Series T83s Tanker Upfit (M)', 'key': 't83s_tanker'}, 
+        'tc82_base': {'model_key':'us_semi', 'name': 'T-Series TC82 Base (M)', 'key': 'tc82_base'}, 
+        't83s_flatbed': {'model_key':'us_semi', 'name': 'T-Series T83s Flatbed Upfit (M)', 'key': 't83s_flatbed'}, 
+        'tc82_base_shuffleboard': {'model_key':'us_semi', 'name': 'T-Series TC82 Base Shuffleboard (M)', 'key': 'tc82_base_shuffleboard'}, 
+        't83s_logging': {'model_key':'us_semi', 'name': 'T-Series T83s Logging Upfit (M)', 'key': 't83s_logging'},
+        'tc84s_mixer': {'model_key':'us_semi', 'name': 'T-Series TC84s Concrete Mixer Upfit (M)', 'key': 'tc84s_mixer'}, 
+        't83_longhaul_custom': {'model_key':'us_semi', 'name': 'T-Series T83 Long Haul Custom (M)', 'key': 't83_longhaul_custom'}, 
+        't83_drag': {'model_key':'us_semi', 'name': 'T-Series T83 Drag (M)', 'key': 't83_drag'}, 
+        't82_ramplow': {'model_key':'us_semi', 'name': 'T-Series T82 JATO + Ram Plow (M)', 'key': 't82_ramplow'}, 
+        'tc83_base': {'model_key':'us_semi', 'name': 'T-Series TC83 Base (M)', 'key': 'tc83_base'}, 
+        't83_longhaul': {'model_key':'us_semi', 'name': 'T-Series T83 Long Haul (M)', 'key': 't83_longhaul'}, 
+        'tc83s_flatbed': {'model_key':'us_semi', 'name': 'T-Series TC83s Flatbed Upfit (M)', 'key': 'tc83s_flatbed'}, 
+        't83_base_shuffleboard': {'model_key':'us_semi', 'name': 'T-Series T83 Base Shuffleboard (M)', 'key': 't83_base_shuffleboard'}, 
+        't83s_rollback': {'model_key':'us_semi', 'name': 'T-Series T83s Car Hauler Upfit (M)', 'key': 't83s_rollback'}, 
+        'tc83_long': {'model_key':'us_semi', 'name': 'T-Series TC83s Upfit Frame (M)', 'key': 'tc83_long'}, 
+        'tc82_custom': {'model_key':'us_semi', 'name': 'T-Series TC82 Custom (M)', 'key': 'tc82_custom'}, 
+        't83s_cargobox': {'model_key':'us_semi', 'name': 'T-Series T83s Cargo Box Upfit (M)', 'key': 't83s_cargobox'}, 
+        't83_custom': {'model_key':'us_semi', 'name': 'T-Series T83 Hammer Lane Special (M)', 'key': 't83_custom'}, 
+        'tc83s_tanker_shuffleboard': {'model_key':'us_semi', 'name': 'T-Series TC83s Shuffleboard Tanker(A)', 'key': 'tc83s_tanker_shuffleboard'}, 
+        't82_custom': {'model_key':'us_semi', 'name': 'T-Series T82 Custom (M)', 'key': 't82_custom'}, 
+        't82_base': {'model_key':'us_semi', 'name': 'T-Series T82 Base (A)', 'key': 't82_base'}, 
+        't83_longhaul_special': {'model_key':'us_semi', 'name': 'T-Series T83 Long Haul Special (M)', 'key': 't83_longhaul_special'}, 
+        't83_stretch': {'model_key':'us_semi', 'name': 'T-Series T83 Stretch (M)', 'key': 't83_stretch'}, 
+        't83_sleeper': {'model_key':'us_semi', 'name': 'T-Series T83 Sleeper (M)', 'key': 't83_sleeper'}, 
+        't84s_destroyer': {'model_key':'us_semi', 'name': 'T-Series T84s Destroyer (A)', 'key': 't84s_destroyer'}, 
+        'tc83_longhaul': {'model_key':'us_semi', 'name': 'T-Series TC83 Long Haul (M)', 'key': 'tc83_longhaul'}, 
+        't83s_mixer': {'model_key':'us_semi', 'name': 'T-Series T83s Concrete Mixer Upfit (A)', 'key': 't83s_mixer'}, 
+        't83_base': {'model_key':'us_semi', 'name': 'T-Series T83 Base (M)', 'key': 't83_base'}, 
+        'tc83_ext': {'model_key':'us_semi', 'name': 'T-Series TC83 Sleeper (M)', 'key': 'tc83_ext'}, 
+        'tc84s_dump': {'model_key':'us_semi', 'name': 'T-Series TC84s Dump Bed Upfit (M)', 'key': 'tc84s_dump'}, 
+        't83_long': {'model_key':'us_semi', 'name': 'T-Series T83s Upfit Frame (A)', 'key': 't83_long'}, 
+        't83s_dump': {'model_key':'us_semi', 'name': 'T-Series T83s Dump Bed Upfit (M)', 'key': 't83s_dump'}, 
+        'tc83s_dump': {'model_key':'us_semi', 'name': 'T-Series TC83s Dump Bed Upfit (M)', 'key': 'tc83s_dump'}, 
+        'tc83s_logging': {'model_key':'us_semi', 'name': 'T-Series TC83s Logging Upfit (M)', 'key': 'tc83s_logging'}, 
+        'tc82s_cargobox': {'model_key':'us_semi', 'name': 'T-Series TC82s Cargo Box Upfit (A)', 'key': 'tc82s_cargobox'}, 
+        'tc83s_tanker': {'model_key':'us_semi', 'name': 'T-Series TC83s Tanker Upfit (A)', 'key': 'tc83s_tanker'}, 
+        't83_sleeper_alt': {'model_key':'us_semi', 'name': 'T-Series T83 Sleeper Custom (M)', 'key': 't83_sleeper_alt'}, 
+        'tc84_tridrive': {'model_key':'us_semi', 'name': 'T-Series TC84 Heavy Haul Special (M)', 'key': 'tc84_tridrive'}, 
+        'tc83_special': {'model_key':'us_semi', 'name': 'T-Series TC83 T600 Special (M)', 'key': 'tc83_special'}, 
+        'tc82s_rollback': {'model_key':'us_semi', 'name': 'T-Series TC82s Car Hauler Upfit (M)', 'key': 'tc82s_rollback'}
+    }, 
+    
+    'type': 'Truck', 'default_configuration': 't83_sleeper', 'key':'us_semi', 'author': 'BeamNG'
+}, 
+
+'cargotrailer': {
+    'name': 'Enclosed Cargo Trailer', 
+    'configurations': {
+        'loaded_armchairs': {'model_key': 'cargotrailer', 'name': 'Enclosed Cargo Trailer Armchairs', 'key': 'loaded_armchairs'}, 
+        'loaded_planks_long': {'model_key': 'cargotrailer', 'name': 'Enclosed Cargo Trailer 2100kg Planks', 'key': 'loaded_planks_long'}, 
+        'loaded_planks': {'model_key': 'cargotrailer', 'name': 'Enclosed Cargo Trailer 1400kg Planks', 'key': 'loaded_planks'}, 
+        'loaded_800': {'model_key': 'cargotrailer', 'name': 'Enclosed Cargo Trailer 800kg Crate', 'key': 'loaded_800'}, 
+        'loaded_400': {'model_key': 'cargotrailer', 'name': 'Enclosed Cargo Trailer 400kg Crate', 'key': 'loaded_400'}, 
+        'default': {'model_key': 'cargotrailer', 'name': 'Enclosed Cargo Trailer Unloaded', 'key': 'default'}, 
+        'loaded_couch': {'model_key': 'cargotrailer', 'name': 'Enclosed Cargo Trailer Couch', 'key': 'loaded_couch'}
+    }, 
+    
+    'type': 'Trailer', 'default_configuration': 'default', 'key': 'cargotrailer', 'author': 'BeamNG'
+}, 
+
+'tsfb': {
+    'name': 'Small Flatbed Trailer', 
+    'configurations': {
+        'unloaded': {'model_key': 'tsfb', 'name': 'Small Flatbed Trailer Unloaded', 'key': 'unloaded'}, 
+        'loaded_planks_long': {'model_key': 'tsfb', 'name': 'Small Flatbed Trailer 2100kg Planks', 'key': 'loaded_planks_long'}, 
+        'loaded_planks': {'model_key': 'tsfb', 'name': 'Small Flatbed Trailer 1400kg Planks', 'key': 'loaded_planks'}, 
+        'loaded_800': {'model_key': 'tsfb', 'name': 'Small Flatbed Trailer 800kg Crate', 'key': 'loaded_800'}, 
+        'loaded_armchairs': {'model_key': 'tsfb', 'name': 'Small Flatbed Trailer Armchairs', 'key': 'loaded_armchairs'}, 
+        'loaded_400': {'model_key': 'tsfb', 'name': 'Small Flatbed Trailer 400kg Crate', 'key': 'loaded_400'}, 
+        'loaded_couch': {'model_key': 'tsfb', 'name': 'Small Flatbed Trailer Couch', 'key': 'loaded_couch'}
+    }, 
+    
+    'type': 'Trailer', 'default_configuration': 'unloaded', 'key': 'tsfb', 'author': 'BeamNG'
+}, 
+
+'containerTrailer': {
+    'name': 'Container Trailer', 
+    'configurations': {
+        '40ft_3axle_20ft_double': {'model_key': 'containerTrailer', 'name': 'Container Trailer 40ft - Double 20ft Container (4200kg)', 'key': '40ft_3axle_20ft_double'}, 
+        '20ft_2axle_tank': {'model_key': 'containerTrailer', 'name': 'Container Trailer 20ft - Tank Container (21600kg Water)', 'key': '20ft_2axle_tank'}, 
+        '40ft_3axle_20ft': {'model_key': 'containerTrailer', 'name': 'Container Trailer 40ft - 20ft Container (2100kg)', 'key': '40ft_3axle_20ft'}, 
+        '20ft_2axle_transport': {'model_key': 'containerTrailer', 'name': 'Container Trailer 20ft - Transport', 'key': '20ft_2axle_transport'}, 
+        '40ft_3axle_40ft': {'model_key': 'containerTrailer', 'name': 'Container Trailer 40ft - 40ft Container (3740kg)', 'key': '40ft_3axle_40ft'}, 
+        '40ft_3axle_tank': {'model_key': 'containerTrailer', 'name': 'Container Trailer 40ft - Tank Container (22300kg Milk)', 'key': '40ft_3axle_tank'}, 
+        '20ft_2axle_tank_empty': {'model_key': 'containerTrailer', 'name': 'Container Trailer 20ft - Tank Container (3650kg Empty)', 'key': '20ft_2axle_tank_empty'}, 
+        '20ft_2axle_20ft': {'model_key': 'containerTrailer', 'name': 'Container Trailer 20ft - 20ft Container (2100kg)', 'key': '20ft_2axle_20ft'}, 
+        '40ft_3axle_tank_double': {'model_key': 'containerTrailer', 'name': 'Container Trailer 40ft - Double Tank Container (7300kg Empty)', 'key': '40ft_3axle_tank_double'}, 
+        '40ft_3axle_transport': {'model_key': 'containerTrailer', 'name': 'Container Trailer 40ft - Transport', 'key': '40ft_3axle_transport'}, 
+        '40ft_3axle_20ft_short': {'model_key': 'containerTrailer', 'name': 'Container Trailer 40ft - 20ft Container Retracted (2100kg)', 'key': '40ft_3axle_20ft_short'}
+    }, 
+    
+    'type': 'Trailer', 'default_configuration': '40ft_3axle_40ft', 'key': 'containerTrailer', 'author': 'BeamNG'
+}, 
