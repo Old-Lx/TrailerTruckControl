@@ -1,8 +1,32 @@
 from beamngpy import BeamNGpy, Scenario, Vehicle
 from beamngpy.sensors import AdvancedIMU, Camera, Lidar, State
+import cv2
 from dotenv import load_dotenv # Para leer del .env
 import numpy as np
 from os import getenv
+
+def stream_cam(cam_data):
+    # Extraer la imagen a color
+        if 'colour' in cam_data:
+            # BeamNGpy suele entregar una imagen de formato PIL RGBA
+            img_pil = cam_data['colour']
+            
+            # Convertir de PIL Image a un Array de Numpy (para OpenCV)
+            img_array = np.array(img_pil)
+
+            # Convertir el formato de color de RGBA (BeamNG) a BGR (El estándar de OpenCV)
+            if img_array.shape[2] == 4: # Si tiene canal Alpha (transparencia)
+                img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
+            else:
+                img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+            # ¡Acá debo desarrollar algo para generar y detectar las líneas del camino a seguir!
+
+            # Visualizar el streaming en una ventana emergente
+            cv2.imshow("Video en Streaming - Route Cam", img_bgr)
+            
+            # OpenCV necesita esta pequeña pausa (1 milisegundo) para poder dibujar la ventana
+            cv2.waitKey(1)
 
 # Clase Camión con Trailer
 class TruckTrailer:
@@ -26,13 +50,12 @@ class TruckTrailer:
 
         # IMU para medir posición y orientación del camión
         self.imu_truck = AdvancedIMU(
-            "accel1", self.bng, self.truck,
-            # From Lua: args.pos / dir / up
-            pos=(0, -0.324, 0.320), # En la parte de abajo del parachoque
-            dir=(1, 0, 0),
+            "accel1", 
+            self.bng, 
+            self.truck,
+            pos=(0, -0.394, 0.7),   # En el parachoque pero más arriba
+            dir=(0, 1, 0),
             up=(0, 0, 1),
-
-            # Update intervals - set to 2000Hz
             gfx_update_time=0.0005,
             physics_update_time=0.0005,
 
@@ -46,63 +69,98 @@ class TruckTrailer:
             is_force_inside_triangle=False,
             is_allow_wheel_nodes=False
         )
-        # IMU para medir posición y orientación del trailer
-        self.imu_trailer = AdvancedIMU(
-            "imu_trailer", self.bng, self.trailer,
-            pos=(0, 1.765, 0.877), dir=(-1, 0, 0), up=(0, 0, 1), # En el kingpin
-            gfx_update_time=0.0005, physics_update_time=0.0005,
-            smoother_strength=1.0, is_using_gravity=True, 
-            is_visualised=True
-        )
+
         # Cámara para seguir la ruta
         self.front_cam = Camera(
-            'front_cam', self.bng, vehicle=self.trailer, 
-            pos=(0, -0.394, 0.7), dir=(1, 0, 0), resolution=(320, 180) # En el parachoque pero más arriba
+            'front_cam', 
+            self.bng, 
+            vehicle=self.truck, 
+            pos=(0, -0.216, 2.784),     # En la parte del techo del camión en el frente
+            dir=(0, -0.965, -0.259),  # Viendo 15 grados hacia abajo del eje Y en el plano YZ
+            up=(0, 0, 1),
+            resolution=(512, 512),
+            is_using_shared_memory=True,
+            is_visualised=True,
+            is_streaming=True
+        )
+
+         # Sensor para los golpes marcha hacia delante
+        self.lidar_front = Lidar(
+            "lidar_front", 
+            self.bng, 
+            self.truck,
+            requested_update_time=0.01, 
+            is_using_shared_memory=True,
+            is_360_mode=False,
+            is_rotate_mode= False,
+            horizontal_angle=90,
+            pos=(0, -0.324, 0.320), # En la parte de abajo del parachoque
+            dir=(0, -1, 0),        # Apuntando hacia adelante (Eje -Y en BeamNG)
+            up=(0, 0, 1),
+            vertical_resolution=16, 
+            frequency=20, 
+            is_visualised=True
         )
 
         # Sensores del trailer
-        # No se simula el sensor del ángulo entre camión y trailer porque no hace falta
+
+        # IMU para medir posición y orientación del trailer
+        self.imu_trailer = AdvancedIMU(
+            "imu_trailer", 
+            self.bng, 
+            self.trailer,
+            pos=(0, 1.765, 0.877), 
+            dir=(0, 1, 0), 
+            up=(0, 0, 1), # En el kingpin
+            gfx_update_time=0.0005, 
+            physics_update_time=0.0005,
+            smoother_strength=1.0, 
+            is_using_gravity=True, 
+            is_visualised=True
+        )
 
         # Cámara de marcha hacia atrás
         self.reverse_cam = Camera(
-            'reverse_cam', self.bng, vehicle=self.trailer,
-            pos=(0, 9.150, 0.876), dir=(-1, 0, 0), resolution=(640, 360) # En la parte de atrás del trailer y abajo
+            'reverse_cam', 
+            self.bng, 
+            vehicle=self.trailer,
+            pos=(0, 9.148, 3.960),      # En la parte de atrás y arriba del trailer
+            dir=(0, 1, 0), 
+            up=(0, 0, 1),
+            resolution=(512, 512),
+            is_using_shared_memory=True,
+            is_visualised=True,
+            is_streaming=True
         )
-        # Sensor para los golpes marcha hacia delante
-        self.lidar_front = Lidar(
-            "lidar_front", self.bng, self.truck,
-            requested_update_time=0.01, is_using_shared_memory=True,
-            is_360_mode=True,           # ¡Modo direccional activado!
-            horizontal_angle=180,        # Cubre 180° hacia el frente
-            pos=(0, 0.0178, 2.784),     # En la parte del techo del camin en el frente
-            dir=(1, 0, 0),        # Apuntando hacia adelante (Eje -Y en BeamNG)
-            up=(0, 0, 1.0),
-            vertical_resolution=16, frequency=20, is_visualised=False
-        )
+
         # Sensor para los golpes marcha hacia atrás
         self.lidar_rear = Lidar(
-            "lidar_rear", self.bng, self.trailer,
-            requested_update_time=0.01, is_using_shared_memory=True,
-            is_360_mode=True,           # ¡Modo direccional activado!
-            horizontal_angle=180,        # Cubre 180° hacia atrás
-            pos=(0, 9.148, 3.960),      # En la parte de atrás y arriba del trailer
-            dir=(-1, 0, 0),         # Apuntando hacia atrás (Eje +Y en BeamNG)
+            "lidar_rear", 
+            self.bng, 
+            self.trailer,
+            requested_update_time=0.01,
+              is_using_shared_memory=True,
+            is_360_mode=False,
+            is_rotate_mode= False,
+            horizontal_angle=90,
+            pos=(0, 9.150, 0.376), # En la parte de atrás del trailer y abajo
+            dir=(0, 1, 0),         # Apuntando hacia atrás (Eje +Y en BeamNG)
             up=(0, 0, 1.0),
-            vertical_resolution=16, frequency=20, is_visualised=False
+            vertical_resolution=16, 
+            frequency=20, 
+            is_visualised=True
         )
 
     # Función para leer los sensores del Truck Trailer
     def read_sensors(self):
-        print("Hola")
         # Leer datos de los sensores
         truck_imu_data = self.imu_truck.poll() # Estos dos son el estado físico del sistema
         trailer_imu_data = self.imu_trailer.poll()
         
         lidar_front_data = self.lidar_front.poll()
         lidar_rear_data = self.lidar_rear.poll()
-        lidar_data = self.lidar.poll()
         reverse_cam_data = self.reverse_cam.poll()
-        line_cam_data = self.line_cam.poll()
+        front_cam_data = self.front_cam.poll()
 
         # Actualizar el estado físico de los vehículos (para leer el Yaw)
         self.truck.sensors.poll()
@@ -121,16 +179,13 @@ class TruckTrailer:
         psi_truck = np.arctan2(dir_truck[1], dir_truck[0])
         psi_trailer = np.arctan2(dir_trailer[1], dir_trailer[0])
         delta_F2 = psi_truck - psi_trailer
-
-        # Procesar la nube de puntos del lidar
-        guard_points = np.array(lidar_data['pointCloud']).reshape(-1, 3)
-        if guard_points.size > 0:
-            min_radius = np.min(np.linalg.norm(guard_points[:, :2], axis=1))
-            # collision_safe = min_radius > max(3.0, 0.5 * v1)
-            
+        
+        # Yaw del camión - Yaw del trailer = ángulo entre camión y trailer
         print(f"Yaw Camión: {np.degrees(psi_truck):.2f}°, Yaw Tráiler: {np.degrees(psi_trailer):.2f}°, Articulación: {np.degrees(delta_F2):.2f}°")
-        print(f"Velocidad v1: {v1:.2f} m/s")
+        print(f"Velocidad v1: {v1*(3600/1000):.2f} Km/h")
 
+
+# Acá generamos el camión y el tráiler
 def gen_truck_and_trailer(scenario, bng):
     # Obtener todos los vehículos disponibles
     available_vehicles = bng.get_available_vehicles()
@@ -198,7 +253,7 @@ def main():
 
     bng.step(60)
 
-    truck_trailer = TruckTrailer(truck, trailer, bng)
+    truck_trailer = TruckTrailer(truck, trailer, bng) # Convertimos el camión con trailer en un tipo
 
     truck_trailer.set_sensors()
 

@@ -51,11 +51,12 @@ def main():
     # Make the truck's AI span the map
     # truck_trailer.truck.ai.set_script(script)
 
-    
-
-    for i in range(65):
-        truck_trailer.bng.control.step(60)
+    # for i in range(65):
+    #    truck_trailer.bng.control.step(60)
     truck_trailer.bng.control.resume()
+
+    while(True):
+        truck_trailer.read_sensors()
 
     input('Presione enter cuando termine la simulación...')
 
