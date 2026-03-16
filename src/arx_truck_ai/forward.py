@@ -41,10 +41,12 @@ def main():
             sphere_radii.append(np.abs(np.sin(np.radians(i))) * 0.25)
             sphere_colors.append((np.sin(np.radians(i)), 0, 0, 0.8))
 
+    ''' Esto añade las esferas al simulador, probablemente esto se borre porque la ruta debe verse sólo en la cámara 
     truck_trailer.bng.debug.add_spheres(
         sphere_coordinates, sphere_radii, sphere_colors, cling=True, offset=0.1
     )
     truck_trailer.bng.debug.add_polyline(points, point_color, cling=True, offset=0.1)
+    '''
 
     # truck_trailer.bng.traffic.spawn()
 
@@ -66,5 +68,5 @@ def main():
     # Or close the simulator
     truck_trailer.bng.close()
 
-    if __name__ == "__main__":
-        main()
+if __name__ == "__main__":
+    main()
