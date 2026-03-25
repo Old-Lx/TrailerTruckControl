@@ -2,6 +2,7 @@ from beamngpy import BeamNGpy, Vehicle
 from beamngpy.sensors import AdvancedIMU, Camera, Lidar
 import cv2
 import numpy as np
+import time
 
 def gen_x_line(origin: tuple[float, float, float]) -> list:
     route = []
@@ -107,6 +108,8 @@ class TruckTrailer:
     lidar_rear: Lidar
     front_cam: Camera
     reverse_cam: Camera
+
+    route: list
 
     # Debo revisar sus coordenadas respecto al mapa ya que las que usan para creación son respecto al camión o al trailer
     truck_origin: tuple[float, float, float]
@@ -252,14 +255,15 @@ class TruckTrailer:
         psi_trailer = np.arctan2(dir_trailer[1], dir_trailer[0])
         delta_F2 = psi_truck - psi_trailer
 
-        route = make_route(self.truck_origin, 0)
-
         # Getting camera data
         reverse_cam_data = self.reverse_cam.poll()
         front_cam_data = self.front_cam.poll()
 
-        stream_cam(front_cam_data, self.front_cam, route)
-        
+        init_time = time.perf_counter()
+        stream_cam(front_cam_data, self.front_cam, self.route)
+        end_time = time.perf_counter()
+        print(f"Test en {(end_time - init_time):.4f}")
+
         # Yaw del camión - Yaw del trailer = ángulo entre camión y trailer
         # print(f"Yaw Camión: {np.degrees(psi_truck):.2f}°, Yaw Tráiler: {np.degrees(psi_trailer):.2f}°, Articulación: {np.degrees(delta_F2):.2f}°")
         # print(f"Velocidad v1: {v1*(3600/1000):.2f} Km/h")
@@ -288,8 +292,11 @@ def gen_truck_and_trailer(scenario, bng):
     # Tal diferencia se debe a la programación del origen para trailer y camión
     rot_quat      = (0, 0, 1, -1) # Cuaternion paralelo al eje x # rot_quat = (0, 0, 1, 0) Este cuaternion es paralelo al eje y
 
+    route = make_route(orig, 0)
+
+
     # Add it to our scenario at this position and rotation
     scenario.add_vehicle(truck, pos=orig, rot_quat=rot_quat)
     scenario.add_vehicle(trailer, pos=trailer_orig, rot_quat=rot_quat)
 
-    return orig, truck, trailer 
+    return orig, truck, trailer, route

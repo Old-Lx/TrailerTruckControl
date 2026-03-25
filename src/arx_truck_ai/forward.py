@@ -1,6 +1,7 @@
-import numpy as np
-from beamngpy import Vehicle
 from arx_truck_ai import bng_open
+from beamngpy import Vehicle
+import numpy as np
+import time
 
 def main():
     truck_trailer, orig = bng_open.main()
@@ -59,6 +60,7 @@ def main():
 
     while(True):
         truck_trailer.read_sensors()
+        
 
     input('Presione enter cuando termine la simulación...')
 
