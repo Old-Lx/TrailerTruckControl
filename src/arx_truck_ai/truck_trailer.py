@@ -1,8 +1,70 @@
 from beamngpy import BeamNGpy, Vehicle
-from beamngpy.sensors import AdvancedIMU, Camera, Lidar
+from beamngpy.sensors import AdvancedIMU, Camera, Lidar, State
 import cv2
 import numpy as np
 import time
+import math
+
+# Construye la matriz intrínseca K de la cámara.
+def get_camera_intrinsics(fov_y_deg: float, width: int, height: int) -> np.ndarray:
+    
+    fov_y_rad = math.radians(fov_y_deg)
+    f_y = (height / 2.0) / math.tan(fov_y_rad / 2.0)
+    f_x = f_y # En BeamNG los píxeles son perfectamente cuadrados
+    
+    c_x = width / 2.0
+    c_y = height / 2.0
+    
+    K = np.array([
+        [f_x, 0, c_x],
+        [0, f_y, c_y],
+        [0, 0, 1]
+    ], dtype=np.float32)
+    return K
+
+# Calcula la Rotación y Traslación del mundo a la cámara usando el estado del camión.
+def get_camera_extrinsics(truck_state: dict, cam_pos: tuple, cam_dir: tuple, cam_up: tuple):
+    truck_p = np.array(truck_state['pos'])
+    truck_f = np.array(truck_state['dir']) # Frente global (-Y local)
+    truck_u = np.array(truck_state['up'])  # Cielo global (+Z local)
+    
+    truck_f /= np.linalg.norm(truck_f)
+    truck_u /= np.linalg.norm(truck_u)
+    truck_r = np.cross(truck_f, truck_u)
+    truck_r /= np.linalg.norm(truck_r)
+
+    # Matriz de rotación del vehículo (Local a Global)
+    # Eje X local = Derecha (truck_r)
+    # Eje Y local = Atrás (-truck_f)
+    # Eje Z local = Arriba (truck_u)
+    R_veh = np.column_stack((truck_r, -truck_f, truck_u))
+
+    # 1. Posición Global exacta (sin el snapping de BeamNG)
+    cam_pos_world = truck_p + R_veh.dot(cam_pos)
+
+    # 2. Dirección y Up Globales
+    cam_dir_world = R_veh.dot(cam_dir)
+    cam_dir_world /= np.linalg.norm(cam_dir_world)
+
+    cam_up_world = R_veh.dot(cam_up)
+    cam_up_world /= np.linalg.norm(cam_up_world)
+
+    # 3. Ejes de OpenCV (Z = Frente, Y = Abajo, X = Derecha)
+    Z_cv = cam_dir_world
+    Y_cv = -cam_up_world
+
+    # Forzar ortogonalidad perfecta
+    X_cv = np.cross(Y_cv, Z_cv)
+    X_cv /= np.linalg.norm(X_cv)
+    Y_cv = np.cross(Z_cv, X_cv)
+    Y_cv /= np.linalg.norm(Y_cv)
+
+    # Matriz final
+    R_cw = np.column_stack((X_cv, Y_cv, Z_cv))
+    rvec, _ = cv2.Rodrigues(R_cw.T)
+    tvec = -np.dot(R_cw.T, cam_pos_world)
+
+    return rvec, tvec
 
 def gen_x_line(origin: tuple[float, float, float]) -> list:
     route = []
@@ -11,7 +73,7 @@ def gen_x_line(origin: tuple[float, float, float]) -> list:
         node = [
             (0.1 * i) + origin[0], # Debo revisar qué aumentos de x convienen
             origin[1],
-            origin[2],
+            0.01,
         ]
         route.append(node)
 
@@ -24,7 +86,7 @@ def gen_x_sine(origin: tuple[float, float, float]) -> list:
         node = [
             4 * np.sin(np.radians(i)) + origin[0],
             i * 0.2 + origin[1],
-            origin[2], # Hay que verificar cómo calcular z para terrenos no planos
+            0.01, # Hay que verificar cómo calcular z para terrenos no planos
         ]
         route.append(node)
 
@@ -52,7 +114,7 @@ def make_route(origin: tuple[float, float, float], route_type: int) -> list:
             return
 
 # Rutina para mostrar la imagen de la cámara
-def stream_cam(cam_data: dict, cam: Camera, route: list):
+def stream_cam(cam_data: dict, route: list, truck_state: dict):
     # Extraer la imagen a color
         if 'colour' in cam_data:
             # BeamNGpy suele entregar una imagen de formato PIL RGBA
@@ -71,27 +133,25 @@ def stream_cam(cam_data: dict, cam: Camera, route: list):
             # No uso este método porque BeamNG tiene una función más sencilla que logra obtener los pixeles
             # cv2.projectPoints()
             # Dibujo la ruta
-            puntos_en_pantalla = []
-        
-            for punto_3d in route:
-                # Pixeles a marcar
-                pixel = cam.world_point_to_pixel(punto_3d)
-                
-                # BeamNG devuelve None o coordenadas negativas si el punto no es visible o hay un error matemático
-                if pixel is not None:
-                    x, y = int(pixel[0]), int(pixel[1])
-                    
-                    # Validar que el píxel caiga dentro de la resolución de tu cámara (512x512)
-                    if 0 <= x < 512 and 0 <= y < 512:
-                        puntos_en_pantalla.append([x, y])
+            # Parámetros EXACTOS de la configuración de tu front_cam
+            cam_local_pos = (0, -0.216, 2.784)
+            cam_local_dir = (0, -0.965, -0.259)
+            cam_local_up  = (0, 0, 1)
             
-            # Si capturamos suficientes puntos visibles, trazamos la línea
-            if len(puntos_en_pantalla) > 1:
-                # OpenCV requiere que los puntos tengan una forma matricial específica (-1, 1, 2)
-                puntos_np = np.array(puntos_en_pantalla, np.int32).reshape((-1, 1, 2))
+            # Usamos truck_state como en la versión que funcionaba
+            rvec, tvec = get_camera_extrinsics(truck_state, cam_local_pos, cam_local_dir, cam_local_up)
+            K = get_camera_intrinsics(fov_y_deg=70, width=512, height=512)
+            
+            route_np = np.array(route, dtype=np.float32)
+            image_points, _ = cv2.projectPoints(route_np, rvec, tvec, K, np.zeros((4,1)))
+            
+            if image_points is not None and len(image_points) > 1:
+                puntos_pantalla = np.int32(image_points).reshape(-1, 2)
+                puntos_validos = [p for p in puntos_pantalla if -2000 < p[0] < 3000 and -2000 < p[1] < 3000]
                 
-                # Dibujamos una línea verde (0, 255, 0) de grosor 3
-                cv2.polylines(img_bgr, [puntos_np], isClosed=False, color=(0, 255, 0), thickness=3)
+                if len(puntos_validos) > 1:
+                    puntos_np = np.array(puntos_validos).reshape((-1, 1, 2))
+                    cv2.polylines(img_bgr, [puntos_np], isClosed=False, color=(0, 255, 0), thickness=3)
 
             # Visualizar el streaming en una ventana emergente
             cv2.imshow("Video en Streaming - Route Cam", img_bgr)
@@ -108,6 +168,8 @@ class TruckTrailer:
     lidar_rear: Lidar
     front_cam: Camera
     reverse_cam: Camera
+    state_truck: State
+    state_trailer: State
 
     route: list
 
@@ -124,6 +186,10 @@ class TruckTrailer:
     # Función para asignar los sensores
     def set_sensors(self):
         # Sensores del camión
+
+        # Estado del camión
+        self.state_truck = State()
+        self.truck.attach_sensor('state_truck', self.state_truck)
 
         # IMU para medir posición y orientación del camión
         self.imu_truck = AdvancedIMU(
@@ -159,7 +225,9 @@ class TruckTrailer:
             field_of_view_y= 70, # 70 es el default
             is_using_shared_memory=True,
             is_visualised=True,
-            is_streaming=True
+            is_streaming=True,
+            is_snapping_desired=False,
+            is_force_inside_triangle=False
         )
 
          # Sensor para los golpes marcha hacia delante
@@ -181,6 +249,10 @@ class TruckTrailer:
         )
 
         # Sensores del trailer
+
+        # Estado del trailer
+        self.state_trailer = State()
+        self.trailer.attach_sensor('state_trailer', self.state_trailer)
 
         # IMU para medir posición y orientación del trailer
         self.imu_trailer = AdvancedIMU(
@@ -208,7 +280,9 @@ class TruckTrailer:
             resolution=(512, 512),
             is_using_shared_memory=True,
             is_visualised=True,
-            is_streaming=True
+            is_streaming=True,
+            is_snapping_desired=False,
+            is_force_inside_triangle=False
         )
 
         # Sensor para los golpes marcha hacia atrás
@@ -241,11 +315,18 @@ class TruckTrailer:
         # Actualizar el estado físico de los vehículos (para leer el Yaw)
         self.truck.sensors.poll()
         self.trailer.sensors.poll()
-        dir_truck = self.truck.state['dir']
-        dir_trailer = self.trailer.state['dir']
+
+        estado_camion = self.truck.state
+        estado_trailer = self.trailer.state
+
+        dir_truck = estado_camion['dir']
+        dir_trailer = estado_trailer['dir']
+
+        # truck_imu_data = data_truck['accel1']
+        # trailer_imu_data = data_trailer['imu_trailer']
 
         # Extraer la velocidad longitudinal (v1) usando el vector de velocidad
-        vel_truck = self.truck.state['vel']
+        vel_truck = estado_camion['vel']
         v1 = np.linalg.norm(vel_truck) # Magnitud en m/s
 
         # Extraer las variables para el modelo cinemático
@@ -260,7 +341,8 @@ class TruckTrailer:
         front_cam_data = self.front_cam.poll()
 
         init_time = time.perf_counter()
-        stream_cam(front_cam_data, self.front_cam, self.route)
+        # Pasamos el estado del camión
+        stream_cam(front_cam_data, self.route, estado_camion)
         end_time = time.perf_counter()
         print(f"Test en {(end_time - init_time):.4f}")
 
