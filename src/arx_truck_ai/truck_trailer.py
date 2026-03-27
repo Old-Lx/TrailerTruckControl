@@ -5,16 +5,15 @@ import numpy as np
 import time
 import math
 
-# Construye la matriz intrínseca K de la cámara.
+# Construye la matriz intrínseca K de la cámara para usar en cv2.projectPoints.
 def get_camera_intrinsics(fov_y_deg: float, width: int, height: int) -> np.ndarray:
-    
     fov_y_rad = math.radians(fov_y_deg)
     f_y = (height / 2.0) / math.tan(fov_y_rad / 2.0)
-    f_x = f_y # En BeamNG los píxeles son perfectamente cuadrados
-    
+    f_x = f_y  # BeamNG usa píxeles cuadrados
+
     c_x = width / 2.0
     c_y = height / 2.0
-    
+
     K = np.array([
         [f_x, 0, c_x],
         [0, f_y, c_y],
@@ -22,47 +21,108 @@ def get_camera_intrinsics(fov_y_deg: float, width: int, height: int) -> np.ndarr
     ], dtype=np.float32)
     return K
 
-# Calcula la Rotación y Traslación del mundo a la cámara usando el estado del camión.
+"""Transformación homogénea cámara-en-vehículo.
+
+    Usa los ejes locales de la cámara definidos en el propio sensor (`dir`, `up`).
+    En BeamNG, `dir` apunta al frente de la cámara y `up` al techo del vehículo.
+    """
+def _build_T_vc(cam_pos: tuple, cam_dir: tuple, cam_up: tuple) -> np.ndarray:
+
+    z_cam = np.array(cam_dir, dtype=np.float32)
+    z_cam /= np.linalg.norm(z_cam)
+
+    y_cam = np.array(cam_up, dtype=np.float32)
+    y_cam /= np.linalg.norm(y_cam)
+
+    x_cam = np.cross(y_cam, z_cam)
+    x_cam /= np.linalg.norm(x_cam)
+
+    # Re-ortonormalizamos Y para evitar drift numérico
+    y_cam = np.cross(z_cam, x_cam)
+    y_cam /= np.linalg.norm(y_cam)
+
+    T_vc = np.eye(4, dtype=np.float32)
+    T_vc[:3, :3] = np.column_stack((x_cam, y_cam, z_cam))
+    T_vc[:3, 3] = np.array(cam_pos, dtype=np.float32)
+    return T_vc
+
+"""Transformación homogénea vehículo-en-mundo usando `state` de BeamNG.
+
+    Tomamos la convención más simple: ejes locales del camión son
+    +X derecha, +Y frente, +Z arriba. `state['dir']` apunta al frente real del
+    vehículo en coordenadas globales, `state['up']` al techo; reconstruimos el eje
+    derecho con un cruzado. R_wv queda con columnas (right, forward, up).
+    """
+def _build_T_wv(truck_state: dict) -> np.ndarray:
+
+    forward_w = np.array(truck_state['dir'], dtype=np.float32)
+    forward_w /= np.linalg.norm(forward_w)
+
+    up_w = np.array(truck_state['up'], dtype=np.float32)
+    up_w /= np.linalg.norm(up_w)
+
+    right_w = np.cross(forward_w, up_w)
+    right_w /= np.linalg.norm(right_w)
+
+    # Re-ortonormaliza por estabilidad numérica
+    up_w = np.cross(right_w, forward_w)
+    up_w /= np.linalg.norm(up_w)
+
+    T_wv = np.eye(4, dtype=np.float32)
+    T_wv[:3, :3] = np.column_stack((right_w, forward_w, up_w))
+    T_wv[:3, 3] = np.array(truck_state['pos'], dtype=np.float32)
+    return T_wv
+
+"""Devuelve (rvec, tvec) usando la convención real de BeamNG para el vehículo.
+
+    Convención local del vehículo en BeamNG: +X = izquierda, +Y = atrás, +Z = arriba.
+    Por tanto, el frente (hacia donde mira) es -Y local. Reconstruimos la rotación
+    vehículo→mundo con columnas (-r, -f, u) para que cuando el camión mira a -Y,
+    R_veh sea identidad. Luego proyectamos a OpenCV (eje y hacia abajo).
+    """
 def get_camera_extrinsics(truck_state: dict, cam_pos: tuple, cam_dir: tuple, cam_up: tuple):
-    truck_p = np.array(truck_state['pos'])
-    truck_f = np.array(truck_state['dir']) # Frente global (-Y local)
-    truck_u = np.array(truck_state['up'])  # Cielo global (+Z local)
-    
+
+    truck_p = np.array(truck_state['pos'], dtype=np.float32)
+    truck_f = np.array(truck_state['dir'], dtype=np.float32)  # Frente global (-Y local)
+    truck_u = np.array(truck_state['up'], dtype=np.float32)   # Techo global (+Z local)
+
     truck_f /= np.linalg.norm(truck_f)
     truck_u /= np.linalg.norm(truck_u)
+
+    # Gram-Schmidt para ortonormalizar y eliminar deriva que causa desplazamiento en Y
     truck_r = np.cross(truck_f, truck_u)
     truck_r /= np.linalg.norm(truck_r)
+    truck_f = np.cross(truck_u, truck_r)
+    truck_f /= np.linalg.norm(truck_f)
+    truck_u = np.cross(truck_r, truck_f)
+    truck_u /= np.linalg.norm(truck_u)
 
-    # Matriz de rotación del vehículo (Local a Global)
-    # Eje X local = Derecha (truck_r)
-    # Eje Y local = Atrás (-truck_f)
-    # Eje Z local = Arriba (truck_u)
+    # Rotación local→mundo del vehículo
+    # Local BeamNG (con Camera): +X = derecha, +Y = frente (mira hacia -Y global), +Z = arriba.
+    # Por eso usamos columnas (right, -front, up). Ortonormal y sin sesgo lateral.
     R_veh = np.column_stack((truck_r, -truck_f, truck_u))
 
-    # 1. Posición Global exacta (sin el snapping de BeamNG)
-    cam_pos_world = truck_p + R_veh.dot(cam_pos)
+    # Posición y orientación de la cámara en mundo (BeamNG)
+    cam_pos_world = truck_p + R_veh.dot(np.array(cam_pos, dtype=np.float32))
+    cam_dir_world = R_veh.dot(np.array(cam_dir, dtype=np.float32))
+    cam_up_world = R_veh.dot(np.array(cam_up, dtype=np.float32))
 
-    # 2. Dirección y Up Globales
-    cam_dir_world = R_veh.dot(cam_dir)
     cam_dir_world /= np.linalg.norm(cam_dir_world)
-
-    cam_up_world = R_veh.dot(cam_up)
     cam_up_world /= np.linalg.norm(cam_up_world)
 
-    # 3. Ejes de OpenCV (Z = Frente, Y = Abajo, X = Derecha)
-    Z_cv = cam_dir_world
-    Y_cv = -cam_up_world
+    # Ejes ortonormales de la cámara
+    z_cam = cam_dir_world
+    y_cam = -cam_up_world  # OpenCV tiene Y hacia abajo en imagen
+    x_cam = np.cross(y_cam, z_cam)
+    x_cam /= np.linalg.norm(x_cam)
+    y_cam = np.cross(z_cam, x_cam)
+    y_cam /= np.linalg.norm(y_cam)
 
-    # Forzar ortogonalidad perfecta
-    X_cv = np.cross(Y_cv, Z_cv)
-    X_cv /= np.linalg.norm(X_cv)
-    Y_cv = np.cross(Z_cv, X_cv)
-    Y_cv /= np.linalg.norm(Y_cv)
+    R_cw = np.column_stack((x_cam, y_cam, z_cam))
+    R_wc = R_cw.T
 
-    # Matriz final
-    R_cw = np.column_stack((X_cv, Y_cv, Z_cv))
-    rvec, _ = cv2.Rodrigues(R_cw.T)
-    tvec = -np.dot(R_cw.T, cam_pos_world)
+    tvec = -R_wc @ cam_pos_world
+    rvec, _ = cv2.Rodrigues(R_wc)
 
     return rvec, tvec
 
@@ -113,51 +173,60 @@ def make_route(origin: tuple[float, float, float], route_type: int) -> list:
         case _:
             return
 
-# Rutina para mostrar la imagen de la cámara
+# Proyecta la ruta (coords mundo) a la imagen de la front_cam. Se apoya en la pose del vehículo (`state`) + el offset fijo de la cámara para mantener la polilínea anclada al mundo aunque el camión se mueva.
 def stream_cam(cam_data: dict, route: list, truck_state: dict):
+
     # Extraer la imagen a color
-        if 'colour' in cam_data:
-            # BeamNGpy suele entregar una imagen de formato PIL RGBA
-            img_pil = cam_data['colour']
-            
-            # Convertir de PIL Image a un Array de Numpy (para OpenCV)
-            img_array = np.array(img_pil)
+    if 'colour' in cam_data:
+        # BeamNGpy suele entregar una imagen de formato PIL RGBA
+        img_pil = cam_data['colour']
 
-            # Convertir el formato de color de RGBA (BeamNG) a BGR (El estándar de OpenCV)
-            if img_array.shape[2] == 4: # Si tiene canal Alpha (transparencia)
-                img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
-            else:
-                img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        # Convertir de PIL Image a un Array de Numpy (para OpenCV)
+        img_array = np.array(img_pil)
 
-            # https://www.geeksforgeeks.org/computer-vision/mapping-coordinates-from-3d-to-2d-using-opencv-python/
-            # No uso este método porque BeamNG tiene una función más sencilla que logra obtener los pixeles
-            # cv2.projectPoints()
-            # Dibujo la ruta
-            # Parámetros EXACTOS de la configuración de tu front_cam
-            cam_local_pos = (0, -0.216, 2.784)
-            cam_local_dir = (0, -0.965, -0.259)
-            cam_local_up  = (0, 0, 1)
-            
-            # Usamos truck_state como en la versión que funcionaba
-            rvec, tvec = get_camera_extrinsics(truck_state, cam_local_pos, cam_local_dir, cam_local_up)
-            K = get_camera_intrinsics(fov_y_deg=70, width=512, height=512)
-            
-            route_np = np.array(route, dtype=np.float32)
-            image_points, _ = cv2.projectPoints(route_np, rvec, tvec, K, np.zeros((4,1)))
-            
+        # Convertir el formato de color de RGBA (BeamNG) a BGR (estándar OpenCV)
+        if img_array.shape[2] == 4:  # Si tiene canal Alpha (transparencia)
+            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGR)
+        else:
+            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+        # Parámetros EXACTOS de la configuración de tu front_cam
+        cam_local_pos = (0, -0.216, 2.784)
+        cam_local_dir = (0, -0.965, -0.259)
+        cam_local_up = (0, 0, 1)
+
+        # Extrínseca = pose vehículo (state) + offset fijo de la cámara
+        rvec, tvec = get_camera_extrinsics(truck_state, cam_local_pos, cam_local_dir, cam_local_up)
+
+        # Intrínseca de la cámara de BeamNG (70° y 512x512)
+        K = get_camera_intrinsics(fov_y_deg=70, width=512, height=512)
+
+        route_np = np.array(route, dtype=np.float32)
+
+        # Filtramos puntos detrás de la cámara (z<=0) o demasiado lejos para evitar “saltos”.
+        R_wc, _ = cv2.Rodrigues(rvec)
+        route_cam = (R_wc @ route_np.T) + tvec.reshape(3, 1)
+        depth_mask = (route_cam[2, :] > 0.5) & (route_cam[2, :] < 500.0)
+
+        if np.any(depth_mask):
+            route_visible = route_np[depth_mask]
+            image_points, _ = cv2.projectPoints(route_visible, rvec, tvec, K, np.zeros((4, 1)))
+
             if image_points is not None and len(image_points) > 1:
                 puntos_pantalla = np.int32(image_points).reshape(-1, 2)
+
+                # Limitar a un rango amplio para no dibujar puntos basura fuera de cuadro
                 puntos_validos = [p for p in puntos_pantalla if -2000 < p[0] < 3000 and -2000 < p[1] < 3000]
-                
+
                 if len(puntos_validos) > 1:
                     puntos_np = np.array(puntos_validos).reshape((-1, 1, 2))
                     cv2.polylines(img_bgr, [puntos_np], isClosed=False, color=(0, 255, 0), thickness=3)
 
-            # Visualizar el streaming en una ventana emergente
-            cv2.imshow("Video en Streaming - Route Cam", img_bgr)
-            
-            # OpenCV necesita esta pequeña pausa (1 milisegundo) para poder dibujar la ventana
-            cv2.waitKey(1)
+        # Visualizar el streaming en una ventana emergente
+        cv2.imshow("Video en Streaming - Route Cam", img_bgr)
+
+        # OpenCV necesita esta pequeña pausa (1 milisegundo) para poder dibujar la ventana
+        cv2.waitKey(1)
 
 # Clase Camión con Trailer
 class TruckTrailer:
@@ -291,7 +360,7 @@ class TruckTrailer:
             self.bng, 
             self.trailer,
             requested_update_time=0.01,
-              is_using_shared_memory=True,
+            is_using_shared_memory=True,
             is_360_mode=False,
             is_rotate_mode= False,
             horizontal_angle=90,
@@ -336,7 +405,7 @@ class TruckTrailer:
         psi_trailer = np.arctan2(dir_trailer[1], dir_trailer[0])
         delta_F2 = psi_truck - psi_trailer
 
-        # Getting camera data
+        # Getting camera data (usar el mismo state recién leído para sincronizar proyección)
         reverse_cam_data = self.reverse_cam.poll()
         front_cam_data = self.front_cam.poll()
 
