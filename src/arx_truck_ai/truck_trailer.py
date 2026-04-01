@@ -6,10 +6,16 @@ import time
 import math
 
 # Construye la matriz intrínseca K de la cámara para usar en cv2.projectPoints.
-def get_camera_intrinsics(fov_y_deg: float, width: int, height: int) -> np.ndarray:
+# Permite escalar la focal (fov_scale) para calibrar empíricamente si el render
+# interno aplica un recorte/aspecto distinto al asumido.
+def get_camera_intrinsics(fov_y_deg: float, width: int, height: int, fov_scale: float = 1.0) -> np.ndarray:
     fov_y_rad = math.radians(fov_y_deg)
     f_y = (height / 2.0) / math.tan(fov_y_rad / 2.0)
     f_x = f_y  # BeamNG usa píxeles cuadrados
+
+    # Ajuste empírico opcional de focal (p.ej. 0.98–1.05) para corregir leve mismatch de FOV.
+    f_x *= fov_scale
+    f_y *= fov_scale
 
     c_x = width / 2.0
     c_y = height / 2.0
@@ -21,12 +27,13 @@ def get_camera_intrinsics(fov_y_deg: float, width: int, height: int) -> np.ndarr
     ], dtype=np.float32)
     return K
 
-"""Transformación homogénea cámara-en-vehículo.
+
+def _build_T_vc(cam_pos: tuple, cam_dir: tuple, cam_up: tuple) -> np.ndarray:
+    """Transformación homogénea cámara-en-vehículo.
 
     Usa los ejes locales de la cámara definidos en el propio sensor (`dir`, `up`).
     En BeamNG, `dir` apunta al frente de la cámara y `up` al techo del vehículo.
     """
-def _build_T_vc(cam_pos: tuple, cam_dir: tuple, cam_up: tuple) -> np.ndarray:
 
     z_cam = np.array(cam_dir, dtype=np.float32)
     z_cam /= np.linalg.norm(z_cam)
@@ -46,14 +53,15 @@ def _build_T_vc(cam_pos: tuple, cam_dir: tuple, cam_up: tuple) -> np.ndarray:
     T_vc[:3, 3] = np.array(cam_pos, dtype=np.float32)
     return T_vc
 
-"""Transformación homogénea vehículo-en-mundo usando `state` de BeamNG.
+
+def _build_T_wv(truck_state: dict) -> np.ndarray:
+    """Transformación homogénea vehículo-en-mundo usando `state` de BeamNG.
 
     Tomamos la convención más simple: ejes locales del camión son
     +X derecha, +Y frente, +Z arriba. `state['dir']` apunta al frente real del
     vehículo en coordenadas globales, `state['up']` al techo; reconstruimos el eje
     derecho con un cruzado. R_wv queda con columnas (right, forward, up).
     """
-def _build_T_wv(truck_state: dict) -> np.ndarray:
 
     forward_w = np.array(truck_state['dir'], dtype=np.float32)
     forward_w /= np.linalg.norm(forward_w)
@@ -73,14 +81,15 @@ def _build_T_wv(truck_state: dict) -> np.ndarray:
     T_wv[:3, 3] = np.array(truck_state['pos'], dtype=np.float32)
     return T_wv
 
-"""Devuelve (rvec, tvec) usando la convención real de BeamNG para el vehículo.
+
+def get_camera_extrinsics(truck_state: dict, cam_pos: tuple, cam_dir: tuple, cam_up: tuple, y_pivot_offset: float = 0.0):
+    """Devuelve (rvec, tvec) usando la convención real de BeamNG para el vehículo.
 
     Convención local del vehículo en BeamNG: +X = izquierda, +Y = atrás, +Z = arriba.
     Por tanto, el frente (hacia donde mira) es -Y local. Reconstruimos la rotación
     vehículo→mundo con columnas (-r, -f, u) para que cuando el camión mira a -Y,
     R_veh sea identidad. Luego proyectamos a OpenCV (eje y hacia abajo).
     """
-def get_camera_extrinsics(truck_state: dict, cam_pos: tuple, cam_dir: tuple, cam_up: tuple):
 
     truck_p = np.array(truck_state['pos'], dtype=np.float32)
     truck_f = np.array(truck_state['dir'], dtype=np.float32)  # Frente global (-Y local)
@@ -89,11 +98,15 @@ def get_camera_extrinsics(truck_state: dict, cam_pos: tuple, cam_dir: tuple, cam
     truck_f /= np.linalg.norm(truck_f)
     truck_u /= np.linalg.norm(truck_u)
 
-    # Gram-Schmidt para ortonormalizar y eliminar deriva que causa desplazamiento en Y
+    # Gram-Schmidt corregido: mantenemos el frente (yaw) como referencia "sagrada"
+    # y ajustamos solo up a partir de right para no robar yaw cuando el chasis se inclina.
     truck_r = np.cross(truck_f, truck_u)
-    truck_r /= np.linalg.norm(truck_r)
-    truck_f = np.cross(truck_u, truck_r)
-    truck_f /= np.linalg.norm(truck_f)
+    if np.linalg.norm(truck_r) == 0:
+        truck_r = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    else:
+        truck_r /= np.linalg.norm(truck_r)
+
+    # Recalculamos up con right x front (mano derecha) para ortonormalizar sin mover el yaw.
     truck_u = np.cross(truck_r, truck_f)
     truck_u /= np.linalg.norm(truck_u)
 
@@ -102,8 +115,12 @@ def get_camera_extrinsics(truck_state: dict, cam_pos: tuple, cam_dir: tuple, cam
     # Por eso usamos columnas (right, -front, up). Ortonormal y sin sesgo lateral.
     R_veh = np.column_stack((truck_r, -truck_f, truck_u))
 
+    # Compensación de pivote (por si state['pos'] está atrasado respecto al morro).
+    # El valor se pasa como parámetro (metros) para calibrar sin tocar código.
+    cam_pos_adjusted = (cam_pos[0], cam_pos[1] + y_pivot_offset, cam_pos[2])
+
     # Posición y orientación de la cámara en mundo (BeamNG)
-    cam_pos_world = truck_p + R_veh.dot(np.array(cam_pos, dtype=np.float32))
+    cam_pos_world = truck_p + R_veh.dot(np.array(cam_pos_adjusted, dtype=np.float32))
     cam_dir_world = R_veh.dot(np.array(cam_dir, dtype=np.float32))
     cam_up_world = R_veh.dot(np.array(cam_up, dtype=np.float32))
 
@@ -126,55 +143,188 @@ def get_camera_extrinsics(truck_state: dict, cam_pos: tuple, cam_dir: tuple, cam
 
     return rvec, tvec
 
-def gen_x_line(origin: tuple[float, float, float]) -> list:
-    route = []
 
-    for i in range(2400):
-        node = [
-            (0.1 * i) + origin[0], # Debo revisar qué aumentos de x convienen
-            origin[1],
-            0.01,
-        ]
-        route.append(node)
+def _extract_cam_pose_from_data(cam_data: dict):
+    """Intenta leer pose absoluta de la cámara desde el `poll` del sensor.
 
-    return route
+    Algunos modos de BeamNGpy entregan `pos`, `dir` y `up` en el diccionario de
+    la cámara. Si no están presentes, devolvemos `None` para seguir usando la
+    composición vehículo + offset.
+    """
 
-def gen_x_sine(origin: tuple[float, float, float]) -> list:
-    route = []
+    if not isinstance(cam_data, dict):
+        return None
 
-    for i in range(2400):
-        node = [
-            4 * np.sin(np.radians(i)) + origin[0],
-            i * 0.2 + origin[1],
-            0.01, # Hay que verificar cómo calcular z para terrenos no planos
-        ]
-        route.append(node)
+    pos = cam_data.get('pos') or cam_data.get('position')
+    dir_vec = cam_data.get('dir') or cam_data.get('direction')
+    up_vec = cam_data.get('up')
 
-    return route
+    if pos is None or dir_vec is None or up_vec is None:
+        return None
 
-'''
-Acá creamos los puntos de la ruta que seguirá el sistema truck-trailer
-    route_type:
-    0: Línea recta sobre el eje X
-    1: Línea recta sobre el eje Y
-    2: Línea recta diagonal en el plano XY
-    3: Trayectoria parabólica y = x^2
-    4: Trayectoria parabólica x = y^2
-    5: Trayectoria senosoidal en x
-    6: Trayectoria senosoidal en y
+    return (
+        np.array(pos, dtype=np.float32),
+        np.array(dir_vec, dtype=np.float32),
+        np.array(up_vec, dtype=np.float32),
+    )
 
-'''
-def make_route(origin: tuple[float, float, float], route_type: int) -> list: 
+
+def get_camera_extrinsics_from_world_pose(cam_pos_w: np.ndarray, cam_dir_w: np.ndarray, cam_up_w: np.ndarray):
+    """Devuelve (rvec, tvec) usando la pose reportada por el sensor.
+
+    Esto evita pequeños sesgos por reconstruir la extrínseca a partir del estado
+    del camión; si el sensor expone su pose exacta, la proyección queda anclada
+    al mundo sin deriva lateral.
+    """
+
+    z_cam = cam_dir_w.astype(np.float32)
+    if np.linalg.norm(z_cam) == 0:
+        return None
+    z_cam /= np.linalg.norm(z_cam)
+
+    up_cam = cam_up_w.astype(np.float32)
+    if np.linalg.norm(up_cam) == 0:
+        return None
+    up_cam /= np.linalg.norm(up_cam)
+
+    # Ejes de la cámara en mundo: X derecha, Y hacia abajo (convención OpenCV), Z hacia delante.
+    x_cam = np.cross(up_cam, z_cam)
+    if np.linalg.norm(x_cam) == 0:
+        return None
+    x_cam /= np.linalg.norm(x_cam)
+
+    y_cam = np.cross(z_cam, x_cam)
+    if np.linalg.norm(y_cam) == 0:
+        return None
+    y_cam /= np.linalg.norm(y_cam)
+    y_cam = -y_cam  # Invertimos para que el eje vertical crezca hacia abajo en la imagen.
+
+    R_cw = np.column_stack((x_cam, y_cam, z_cam))
+    R_wc = R_cw.T
+
+    tvec = -R_wc @ cam_pos_w.astype(np.float32)
+    rvec, _ = cv2.Rodrigues(R_wc)
+
+    return rvec, tvec
+
+def _rotate_and_translate_route(points: np.ndarray, origin: tuple[float, float, float], yaw: float) -> list:
+    """Rota los puntos en XY por `yaw` y luego los traslada al `origin`."""
+
+    if points is None or len(points) == 0:
+        return []
+
+    pts = np.asarray(points, dtype=np.float32)
+
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+    rot = np.array([[cos_yaw, -sin_yaw], [sin_yaw, cos_yaw]], dtype=np.float32)
+
+    xy_rotated = pts[:, :2] @ rot.T
+
+    translated = np.empty_like(pts)
+    translated[:, 0] = xy_rotated[:, 0] + origin[0]
+    translated[:, 1] = xy_rotated[:, 1] + origin[1]
+    translated[:, 2] = pts[:, 2] + origin[2]
+
+    return translated.tolist()
+
+
+def gen_line_x(length: float = 200.0, step: float = 1.0, z: float = 0.0) -> np.ndarray:
+    """Línea recta paralela al eje X partiendo de (0, 0, z)."""
+
+    xs = np.arange(0.0, length + step, step, dtype=np.float32)
+    ys = np.zeros_like(xs)
+    zs = np.full_like(xs, z, dtype=np.float32)
+    return np.column_stack((xs, ys, zs))
+
+
+def gen_line_y(length: float = 200.0, step: float = 1.0, z: float = 0.0) -> np.ndarray:
+    """Línea recta paralela al eje Y partiendo de (0, 0, z)."""
+
+    ys = np.arange(0.0, length + step, step, dtype=np.float32)
+    xs = np.zeros_like(ys)
+    zs = np.full_like(ys, z, dtype=np.float32)
+    return np.column_stack((xs, ys, zs))
+
+
+def gen_line_diagonal(length: float = 200.0, step: float = 1.0, z: float = 0.0) -> np.ndarray:
+    """Línea recta con pendiente 1 (x = y) en el plano XY."""
+
+    t = np.arange(0.0, length + step, step, dtype=np.float32)
+    zs = np.full_like(t, z, dtype=np.float32)
+    return np.column_stack((t, t, zs))
+
+
+def gen_parabola_y_from_x(a: float = 0.01, x_max: float = 80.0, step: float = 0.5, z: float = 0.0) -> np.ndarray:
+    """Parábola de la forma y = a * x^2."""
+
+    xs = np.arange(0.0, x_max + step, step, dtype=np.float32)
+    ys = a * xs ** 2
+    zs = np.full_like(xs, z, dtype=np.float32)
+    return np.column_stack((xs, ys, zs))
+
+
+def gen_parabola_x_from_y(a: float = 0.01, y_max: float = 80.0, step: float = 0.5, z: float = 0.0) -> np.ndarray:
+    """Parábola de la forma x = a * y^2."""
+
+    ys = np.arange(0.0, y_max + step, step, dtype=np.float32)
+    xs = a * ys ** 2
+    zs = np.full_like(ys, z, dtype=np.float32)
+    return np.column_stack((xs, ys, zs))
+
+
+def gen_sine_x(amplitude: float = 3.0, wavelength: float = 40.0, length: float = 200.0, step: float = 1.0, phase: float = 0.0, z: float = 0.0) -> np.ndarray:
+    """Onda senoidal oscilando en Y mientras avanza en X."""
+
+    xs = np.arange(0.0, length + step, step, dtype=np.float32)
+    ys = amplitude * np.sin((2 * np.pi / wavelength) * xs + phase)
+    zs = np.full_like(xs, z, dtype=np.float32)
+    return np.column_stack((xs, ys, zs))
+
+
+def gen_sine_y(amplitude: float = 3.0, wavelength: float = 40.0, length: float = 200.0, step: float = 1.0, phase: float = 0.0, z: float = 0.0) -> np.ndarray:
+    """Onda senoidal oscilando en X mientras avanza en Y."""
+
+    ys = np.arange(0.0, length + step, step, dtype=np.float32)
+    xs = amplitude * np.sin((2 * np.pi / wavelength) * ys + phase)
+    zs = np.full_like(ys, z, dtype=np.float32)
+    return np.column_stack((xs, ys, zs))
+
+
+# Tipos soportados en make_route:
+# 0: Línea en X | 1: Línea en Y | 2: Diagonal | 3: y = a*x^2 | 4: x = a*y^2 | 5: Seno en X | 6: Seno en Y
+def make_route(origin: tuple[float, float, float], route_type: int, yaw: float = 0.0, **params) -> list:
+    """Genera la ruta solicitada, la rota por `yaw` y la traslada a `origin`."""
+
+    z = params.get('z', 0.0)
+
     match route_type:
         case 0:
-            return  gen_x_line(origin)
+            base = gen_line_x(length=params.get('length', 200.0), step=params.get('step', 1.0), z=z)
+        case 1:
+            base = gen_line_y(length=params.get('length', 200.0), step=params.get('step', 1.0), z=z)
+        case 2:
+            base = gen_line_diagonal(length=params.get('length', 200.0), step=params.get('step', 1.0), z=z)
+        case 3:
+            base = gen_parabola_y_from_x(a=params.get('a', 0.01), x_max=params.get('span', 80.0), step=params.get('step', 0.5), z=z)
+        case 4:
+            base = gen_parabola_x_from_y(a=params.get('a', 0.01), y_max=params.get('span', 80.0), step=params.get('step', 0.5), z=z)
         case 5:
-            return gen_x_sine(origin)
+            base = gen_sine_x(amplitude=params.get('amplitude', 3.0), wavelength=params.get('wavelength', 40.0), length=params.get('length', 200.0), step=params.get('step', 1.0), phase=params.get('phase', 0.0), z=z)
+        case 6:
+            base = gen_sine_y(amplitude=params.get('amplitude', 3.0), wavelength=params.get('wavelength', 40.0), length=params.get('length', 200.0), step=params.get('step', 1.0), phase=params.get('phase', 0.0), z=z)
         case _:
-            return
+            base = np.empty((0, 3), dtype=np.float32)
 
-# Proyecta la ruta (coords mundo) a la imagen de la front_cam. Se apoya en la pose del vehículo (`state`) + el offset fijo de la cámara para mantener la polilínea anclada al mundo aunque el camión se mueva.
+    return _rotate_and_translate_route(base, origin, yaw)
+
+# Rutina para mostrar la imagen de la cámara
 def stream_cam(cam_data: dict, route: list, truck_state: dict):
+    """Proyecta la ruta (coords mundo) a la imagen de la front_cam.
+
+    Se apoya en la pose del vehículo (`state`) + el offset fijo de la cámara para
+    mantener la polilínea anclada al mundo aunque el camión se mueva.
+    """
 
     # Extraer la imagen a color
     if 'colour' in cam_data:
@@ -194,12 +344,27 @@ def stream_cam(cam_data: dict, route: list, truck_state: dict):
         cam_local_pos = (0, -0.216, 2.784)
         cam_local_dir = (0, -0.965, -0.259)
         cam_local_up = (0, 0, 1)
+        # Usamos la pose real del sensor si viene en el `poll`; si no, caemos al
+        # cálculo clásico con el offset relativo al camión. Permite calibrar:
+        # - y_pivot_offset: compensa brazo de palanca (m) del origen de rotación.
+        # - fov_scale: microajuste de focal si el render aplica aspect distinto.
+        cam_pose = _extract_cam_pose_from_data(cam_data)
+        extrinsics = None
 
-        # Extrínseca = pose vehículo (state) + offset fijo de la cámara
-        rvec, tvec = get_camera_extrinsics(truck_state, cam_local_pos, cam_local_dir, cam_local_up)
+        y_pivot_offset = -3.0  # <-- calibra aquí (ej. 1.5 a 3.0 m) sin tocar más código
+        fov_scale = 0.98       # <-- calibra aquí (ej. 0.98 a 1.05) si ves corrimiento residual
 
-        # Intrínseca de la cámara de BeamNG (70° y 512x512)
-        K = get_camera_intrinsics(fov_y_deg=70, width=512, height=512)
+        if cam_pose is not None:
+            extrinsics = get_camera_extrinsics_from_world_pose(*cam_pose)
+
+        if extrinsics is None:
+            # Fallback robusto: reconstrucción con estado del camión.
+            rvec, tvec = get_camera_extrinsics(truck_state, cam_local_pos, cam_local_dir, cam_local_up, y_pivot_offset=y_pivot_offset)
+        else:
+            rvec, tvec = extrinsics
+
+        # Intrínseca de la cámara de BeamNG (70° y 512x512) con escala ajustable de focal
+        K = get_camera_intrinsics(fov_y_deg=70, width=512, height=512, fov_scale=fov_scale)
 
         route_np = np.array(route, dtype=np.float32)
 
@@ -360,7 +525,7 @@ class TruckTrailer:
             self.bng, 
             self.trailer,
             requested_update_time=0.01,
-            is_using_shared_memory=True,
+              is_using_shared_memory=True,
             is_360_mode=False,
             is_rotate_mode= False,
             horizontal_angle=90,
@@ -409,11 +574,12 @@ class TruckTrailer:
         reverse_cam_data = self.reverse_cam.poll()
         front_cam_data = self.front_cam.poll()
 
-        init_time = time.perf_counter()
+        # init_time = time.perf_counter()
+        # end_time = time.perf_counter()
+        # print(f"Test en {(end_time - init_time):.4f}")
+        
         # Pasamos el estado del camión
         stream_cam(front_cam_data, self.route, estado_camion)
-        end_time = time.perf_counter()
-        print(f"Test en {(end_time - init_time):.4f}")
 
         # Yaw del camión - Yaw del trailer = ángulo entre camión y trailer
         # print(f"Yaw Camión: {np.degrees(psi_truck):.2f}°, Yaw Tráiler: {np.degrees(psi_trailer):.2f}°, Articulación: {np.degrees(delta_F2):.2f}°")
@@ -438,12 +604,13 @@ def gen_truck_and_trailer(scenario, bng):
     truck = Vehicle('truck', model='us_semi', license='Lartrax', part_config=truck_cfg_path)
     trailer = Vehicle('trailer', model='dryvan', license='Lartrax', part_config=trailer_cfg_path)
 
-    orig          = (0, 0, 0.738) #  Estas son las coordenadas adecuadas para generar el camin en smallgrid
+    orig          = (0, 0, 0.738) # Estas son las coordenadas adecuadas para generar el camión en smallgrid a partir del origen
+    route_init     = (20, 0, 0.738) # punto inicial de la ruta generada
     trailer_orig  = (-3.017, -0.949, 1.204) # Esta es la ubicación que debe tener el trailer para estar exactamente en el punto donde se puede conectar el camión, esto corresponde a -3.017 a lo largo el eje de movimiento y 0.949 a lo largo del eje de giro
     # Tal diferencia se debe a la programación del origen para trailer y camión
     rot_quat      = (0, 0, 1, -1) # Cuaternion paralelo al eje x # rot_quat = (0, 0, 1, 0) Este cuaternion es paralelo al eje y
 
-    route = make_route(orig, 0)
+    route = make_route(route_init, 1)
 
 
     # Add it to our scenario at this position and rotation
