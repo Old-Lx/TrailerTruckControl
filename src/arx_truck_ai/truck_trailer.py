@@ -581,6 +581,16 @@ class TruckTrailer:
         # Pasamos el estado del camión
         stream_cam(front_cam_data, self.route, estado_camion)
 
+        # Return the relevant data for the forward control algorithm
+        return {
+            "v1": v1,
+            "psi_truck": psi_truck,
+            "psi_trailer": psi_trailer,
+            "delta_F2": delta_F2,
+            "truck_pos": estado_camion['pos'],
+            "truck_dir": dir_truck
+        }
+        
         # Yaw del camión - Yaw del trailer = ángulo entre camión y trailer
         # print(f"Yaw Camión: {np.degrees(psi_truck):.2f}°, Yaw Tráiler: {np.degrees(psi_trailer):.2f}°, Articulación: {np.degrees(delta_F2):.2f}°")
         # print(f"Velocidad v1: {v1*(3600/1000):.2f} Km/h")
