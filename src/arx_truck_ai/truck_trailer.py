@@ -319,11 +319,8 @@ def make_route(origin: tuple[float, float, float], route_type: int, yaw: float =
     return _rotate_and_translate_route(base, origin, yaw)
 
 # Rutina para mostrar la imagen de la cámara
-def stream_cam(cam_data: dict, route: list, truck_state: dict):
-    """Proyecta la ruta (coords mundo) a la imagen de la front_cam.
-
-    Se apoya en la pose del vehículo (`state`) + el offset fijo de la cámara para
-    mantener la polilínea anclada al mundo aunque el camión se mueva.
+def stream_cam(cam_data: dict, route: list, veh_state: dict, is_reverse: bool = False):
+    """Proyecta la ruta (coords mundo) a la imagen de la cámara (front_cam o reverse_cam).
     """
 
     # Extraer la imagen a color
@@ -340,26 +337,35 @@ def stream_cam(cam_data: dict, route: list, truck_state: dict):
         else:
             img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
 
-        # Parámetros EXACTOS de la configuración de tu front_cam
-        cam_local_pos = (0, -0.216, 2.784)
-        cam_local_dir = (0, -0.965, -0.259)
-        cam_local_up = (0, 0, 1)
+        if not is_reverse:
+            # Parámetros EXACTOS de la configuración de tu front_cam
+            cam_local_pos = (0, -0.216, 2.784)
+            cam_local_dir = (0, -0.965, -0.259)
+            cam_local_up = (0, 0, 1)
+            y_pivot_offset = -3.0  # <-- calibra aquí (ej. 1.5 a 3.0 m) sin tocar más código
+            window_name = "Video en Streaming - Route Cam (Front)"
+        else:
+            # Parámetros EXACTOS de la configuración de tu reverse_cam
+            cam_local_pos = (0, 9.148, 3.960)
+            cam_local_dir = (0, 1, 0)
+            cam_local_up = (0, 0, 1)
+            y_pivot_offset = 0.0
+            window_name = "Video en Streaming - Reverse Cam (Trailer)"
+        
         # Usamos la pose real del sensor si viene en el `poll`; si no, caemos al
-        # cálculo clásico con el offset relativo al camión. Permite calibrar:
-        # - y_pivot_offset: compensa brazo de palanca (m) del origen de rotación.
+        # cálculo clásico con el offset relativo al vehículo. Permite calibrar:
         # - fov_scale: microajuste de focal si el render aplica aspect distinto.
         cam_pose = _extract_cam_pose_from_data(cam_data)
         extrinsics = None
 
-        y_pivot_offset = -3.0  # <-- calibra aquí (ej. 1.5 a 3.0 m) sin tocar más código
         fov_scale = 0.98       # <-- calibra aquí (ej. 0.98 a 1.05) si ves corrimiento residual
 
         if cam_pose is not None:
             extrinsics = get_camera_extrinsics_from_world_pose(*cam_pose)
 
         if extrinsics is None:
-            # Fallback robusto: reconstrucción con estado del camión.
-            rvec, tvec = get_camera_extrinsics(truck_state, cam_local_pos, cam_local_dir, cam_local_up, y_pivot_offset=y_pivot_offset)
+            # Fallback robusto: reconstrucción con estado del vehículo.
+            rvec, tvec = get_camera_extrinsics(veh_state, cam_local_pos, cam_local_dir, cam_local_up, y_pivot_offset=y_pivot_offset)
         else:
             rvec, tvec = extrinsics
 
@@ -388,7 +394,7 @@ def stream_cam(cam_data: dict, route: list, truck_state: dict):
                     cv2.polylines(img_bgr, [puntos_np], isClosed=False, color=(0, 255, 0), thickness=3)
 
         # Visualizar el streaming en una ventana emergente
-        cv2.imshow("Video en Streaming - Route Cam", img_bgr)
+        cv2.imshow(window_name, img_bgr)
 
         # OpenCV necesita esta pequeña pausa (1 milisegundo) para poder dibujar la ventana
         cv2.waitKey(1)
@@ -538,7 +544,7 @@ class TruckTrailer:
         )
 
     # Función para leer los sensores del Truck Trailer
-    def read_sensors(self):
+    def read_sensors(self, is_reverse=False):
         # Leer datos de los sensores
         truck_imu_data = self.imu_truck.poll() # Estos dos son el estado físico del sistema
         trailer_imu_data = self.imu_trailer.poll()
@@ -578,8 +584,11 @@ class TruckTrailer:
         # end_time = time.perf_counter()
         # print(f"Test en {(end_time - init_time):.4f}")
         
-        # Pasamos el estado del camión
-        stream_cam(front_cam_data, self.route, estado_camion)
+        # Pasamos el estado del camión o tráiler según corresponda
+        if is_reverse:
+            stream_cam(reverse_cam_data, self.route, estado_trailer, is_reverse=True)
+        else:
+            stream_cam(front_cam_data, self.route, estado_camion, is_reverse=False)
 
         # Return the relevant data for the forward control algorithm
         return {
@@ -588,7 +597,9 @@ class TruckTrailer:
             "psi_trailer": psi_trailer,
             "delta_F2": delta_F2,
             "truck_pos": estado_camion['pos'],
-            "truck_dir": dir_truck
+            "truck_dir": dir_truck,
+            "trailer_pos": estado_trailer['pos'],
+            "trailer_dir": dir_trailer
         }
         
         # Yaw del camión - Yaw del trailer = ángulo entre camión y trailer
