@@ -627,11 +627,17 @@ def gen_truck_and_trailer(scenario, bng):
 
     orig          = (0, 0, 0.738) # Estas son las coordenadas adecuadas para generar el camión en smallgrid a partir del origen
     route_init     = (20, 0, 0.738) # punto inicial de la ruta generada
-    trailer_orig  = (-3.017, -0.949, 1.204) # Esta es la ubicación que debe tener el trailer para estar exactamente en el punto donde se puede conectar el camión, esto corresponde a -3.017 a lo largo el eje de movimiento y 0.949 a lo largo del eje de giro
-    # Tal diferencia se debe a la programación del origen para trailer y camión
-    rot_quat      = (0, 0, 1, -1) # Cuaternion paralelo al eje x # rot_quat = (0, 0, 1, 0) Este cuaternion es paralelo al eje y
 
-    route = make_route(route_init, 1)
+    # Parámetros para forward
+    # trailer_orig  = (-3.017, -0.949, 1.204) # Esta es la ubicación que debe tener el trailer para estar exactamente en el punto donde se puede conectar el camión, esto corresponde a -3.017 a lo largo el eje de movimiento y 0.949 a lo largo del eje de giro
+    # Tal diferencia se debe a la programación del origen para trailer y camión
+    # rot_quat      = (0, 0, 1, -1) # Cuaternion paralelo al eje x # rot_quat = (0, 0, 1, 0) Este cuaternion es paralelo al eje y
+
+    # Parámetros para backward
+    trailer_orig  = (3.017, 0.949, 1.204)
+    rot_quat      = (0, 0, 1, 1) # cuaternión paralelo a x que mira a las x negativas
+
+    route = make_route(route_init, 0)
 
 
     # Add it to our scenario at this position and rotation
