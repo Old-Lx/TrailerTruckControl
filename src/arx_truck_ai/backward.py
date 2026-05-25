@@ -24,15 +24,32 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, ve
             closest_idx = i
 
     # 2. Busca el punto "lookahead" a una distancia de la posición actual del TRÁILER
-    target_idx = closest_idx
+    # Por defecto apuntamos al último punto de la ruta en caso de que estemos cerca del final
+    target_idx = len(ruta) - 1
+    found_target = False
     for i in range(closest_idx, len(ruta)):
         pt = ruta[i]
         dist = math.hypot(pos_trailer[0] - pt[0], pos_trailer[1] - pt[1])
         if dist >= lookahead:
             target_idx = i
+            found_target = True
             break
 
     target_pt = ruta[target_idx]
+
+    # Si estamos en el tramo final y la ruta se acaba, proyectamos matemáticamente
+    # el último vector para que el "lookahead" nunca se reduzca a 0, evitando el jackknife de fin de ruta.
+    if not found_target and len(ruta) > 1:
+        pt_last = ruta[-1]
+        pt_prev = ruta[-2]
+        dir_x = pt_last[0] - pt_prev[0]
+        dir_y = pt_last[1] - pt_prev[1]
+        norm = math.hypot(dir_x, dir_y)
+        if norm > 0:
+            dir_x /= norm
+            dir_y /= norm
+        # Extrapolamos el punto objetivo artificialmente hacia el horizonte manteniendo el lookahead real
+        target_pt = (pos_trailer[0] + dir_x * lookahead, pos_trailer[1] + dir_y * lookahead)
 
     # 3. Calcular el ángulo objetivo (Heading objetivo hacia el punto)
     dx = target_pt[0] - pos_trailer[0]
@@ -48,20 +65,27 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, ve
     e_trailer = (yaw_objetivo_reversa - psi_trailer + math.pi) % (2 * math.pi) - math.pi
     e_truck = (yaw_objetivo_reversa - psi_truck + math.pi) % (2 * math.pi) - math.pi
 
-    # 5. Ganancias Proporcionales base
-    # Para el tráiler, en reversa, si el error es positivo (izquierda), el camión debe girar el volante a la derecha (steering positivo)
-    # para enviar el remolque a la izquierda.
-    k_trailer = 1.5   # Tráiler empuja
-    k_truck = -0.5    # El camión sigue la misma línea general para evitar tijera
+    # 5. Ganancias del Contramovimiento (Teoría adaptada a BeamNG con Balance Amortiguado)
+    # En BeamNG, steering > 0 gira las ruedas a la derecha, lo que empuja la cola del 
+    # camión a la izquierda, la nariz del tráiler a la izquierda, y su cola a la derecha.
+    # Por ende, necesitamos k_trailer POSITIVO frente al error del tráiler.
+    #
+    # Para eliminar el "S-shape" (serpenteo/snaking), necesitamos un control altamente amortiguado.
+    # Si reescribimos la ecuación aditiva: steering = K_path * e_trailer + K_damp * delta_F2
+    # El S-shape ocurre porque el camión se articula más rápido de lo que corrige el camino.
+    # Ajustamos a: Path gain (suave) = 0.25, Damping gain (agresivo) = 0.85
+    # Despejando: k_truck = -0.85, k_trailer = 0.25 - k_truck = 1.10
+    k_trailer = 1.10  
+    k_truck = -0.85      
 
-    # 6. Histéresis (Anti-Jackknife)
-    # Si la articulación se cierra peligrosamente (ej. > 25° aprox 0.43 rad)
+    # 6. Histéresis Anti-Jackknife en casos de pánico crítico
+    # Si la articulación se cierra peligrosamente (ej. > 25° aprox 0.45 rad)
     limite_tijera = 0.45
     if abs(delta_F2) > limite_tijera:
-        # Se penaliza el seguimiento del tráiler, y se prioriza que el camión se alinee con el tráiler
-        k_trailer = 0.8
-        k_truck = -1.2
-        # print(f"Alerta de tijera (Articulación: {delta_F2:.2f} rad). Reduciendo giro...")
+        # Prioridad ABOSLUTA a enderezar el camión bajo el tráiler
+        k_trailer = 0.15 
+        k_truck = -1.20
+        # print(f"Alerta de tijera (Articulación: {delta_F2:.2f} rad). Modo histéresis activado...")
 
     steering_raw = k_trailer * e_trailer + k_truck * e_truck
     
@@ -115,8 +139,10 @@ def main():
         pos_trailer = sensores["trailer_pos"]
 
         # Control Aditivo 
+        # Aumentamos el lookahead a 15.0 metros (ligeramente superior a la longitud del vehículo combinado)
+        # para que el Pure Pursuit tenga suficiente margen espacial de convergencia y no sea reactivo.
         steering, throttle, brake, current_idx, finished = control_aditivo_histeresis(
-            pos_trailer, psi_trailer, psi_camion, delta_F2, velocidad, route_points, current_idx, lookahead=5.0
+            pos_trailer, psi_trailer, psi_camion, delta_F2, velocidad, route_points, current_idx, lookahead=15.0
         )
 
         truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)

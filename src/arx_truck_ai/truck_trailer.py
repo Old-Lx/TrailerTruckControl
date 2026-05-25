@@ -574,7 +574,32 @@ class TruckTrailer:
         
         psi_truck = np.arctan2(dir_truck[1], dir_truck[0])
         psi_trailer = np.arctan2(dir_trailer[1], dir_trailer[0])
-        delta_F2 = psi_truck - psi_trailer
+        
+        # --- CORRECCIÓN 1: NORMALIZACIÓN DE ARTICULACIÓN ---
+        # Calculamos delta_F2 y aplicamos una restricción modular para que siempre
+        # esté en el rango [-pi, pi]. Evita cálculos matemáticos erróneos de +-6.28 radianes 
+        # que disparen los topes anti-jackknife al iniciar o en maniobras bruscas.
+        delta_F2 = (psi_truck - psi_trailer + math.pi) % (2 * math.pi) - math.pi
+
+        # --- CORRECCIÓN 2: CORRECCIÓN DEL OFFSET FANTASMA DEL TRÁILER ---
+        # El origen 3D del tráiler está desfasado 0.949 metros lateralmente.
+        # Creamos el vector perpendicular (right) mediante producto cruz entre frente y techo.
+        trailer_pos_raw = np.array(estado_trailer['pos'], dtype=np.float32)
+        trailer_dir_vec = np.array(estado_trailer['dir'], dtype=np.float32)
+        trailer_up_vec = np.array(estado_trailer['up'], dtype=np.float32)
+        
+        # Normalizamos los vectores de dirección
+        trailer_dir_vec /= np.linalg.norm(trailer_dir_vec)
+        trailer_up_vec /= np.linalg.norm(trailer_up_vec)
+        
+        # Obtenemos el vector de cara hacia la derecha del tráiler y lo normalizamos
+        trailer_right_vec = np.cross(trailer_dir_vec, trailer_up_vec)
+        trailer_right_vec /= np.linalg.norm(trailer_right_vec)
+
+        # Restamos exactamente el offset lateral a lo largo del vector derecho para
+        # desplazar el punto central lógico de control visual al verdadero centro del chasis
+        trailer_pos_corrected = trailer_pos_raw - (trailer_right_vec * 0.949)
+        trailer_pos_final = trailer_pos_corrected.tolist()
 
         # Getting camera data (usar el mismo state recién leído para sincronizar proyección)
         reverse_cam_data = self.reverse_cam.poll()
@@ -598,7 +623,7 @@ class TruckTrailer:
             "delta_F2": delta_F2,
             "truck_pos": estado_camion['pos'],
             "truck_dir": dir_truck,
-            "trailer_pos": estado_trailer['pos'],
+            "trailer_pos": trailer_pos_final,  # Aplicamos la posición corregida centrada
             "trailer_dir": dir_trailer
         }
         
