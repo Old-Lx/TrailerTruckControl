@@ -601,6 +601,21 @@ class TruckTrailer:
         trailer_pos_corrected = trailer_pos_raw - (trailer_right_vec * 0.949)
         trailer_pos_final = trailer_pos_corrected.tolist()
 
+        # --- EXTRACCIÓN DE 8 GRADOS DE LIBERTAD (ROLL Y PITCH) ---
+        # Dado que BeamNG aplica dinámicas de suspensión, el chasis puede balancearse (Roll).
+        # El vector "right" del camión cruzando dir y up
+        truck_dir_vec = np.array(dir_truck, dtype=np.float32)
+        truck_up_vec = np.array(estado_camion['up'], dtype=np.float32)
+        truck_dir_vec /= np.linalg.norm(truck_dir_vec)
+        truck_up_vec /= np.linalg.norm(truck_up_vec)
+        truck_right_vec = np.cross(truck_dir_vec, truck_up_vec)
+        truck_right_vec /= np.linalg.norm(truck_right_vec)
+
+        # Roll: ángulo del vector right respecto a la horizontal pura (inclinación en Z)
+        # pitch: ángulo del vector dir respecto a la horizontal pura en Z
+        truck_roll = math.asin(np.clip(truck_right_vec[2], -1.0, 1.0))
+        trailer_roll = math.asin(np.clip(trailer_right_vec[2], -1.0, 1.0))
+
         # Getting camera data (usar el mismo state recién leído para sincronizar proyección)
         reverse_cam_data = self.reverse_cam.poll()
         front_cam_data = self.front_cam.poll()
@@ -623,8 +638,10 @@ class TruckTrailer:
             "delta_F2": delta_F2,
             "truck_pos": estado_camion['pos'],
             "truck_dir": dir_truck,
+            "truck_roll": truck_roll,
             "trailer_pos": trailer_pos_final,  # Aplicamos la posición corregida centrada
-            "trailer_dir": dir_trailer
+            "trailer_dir": dir_trailer,
+            "trailer_roll": trailer_roll
         }
         
         # Yaw del camión - Yaw del trailer = ángulo entre camión y trailer
