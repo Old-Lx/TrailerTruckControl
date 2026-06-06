@@ -16,7 +16,7 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
     if len(ruta) == 0:
         return 0.0, 0.0, 1.0, current_idx, True
 
-    # 0. Implementar Lookahead Dinámico
+    # Implementar Lookahead Dinámico
     # Ajustar inteligentemente dónde "mira" el camión hacia adelante basado en la velocidad actual
     lookahead = np.clip(min_lookahead + (k_lookahead_gain * abs(velocidad)), min_lookahead, max_lookahead)
 
@@ -52,7 +52,7 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
     # Normaliza el error a [-pi, pi]
     yaw_error = (raw_error + math.pi) % (2 * math.pi) - math.pi
 
-    # 1. Integración Dinámica de Suspensión (8-DOF Active Yaw/Roll Control)
+    # Integración Dinámica de Suspensión (8-DOF Active Yaw/Roll Control)
     # Evaluamos la estabilidad gravitacional de las masas (Truck Roll)
     limite_roll = 0.08
     limite_roll_rate = 0.15 

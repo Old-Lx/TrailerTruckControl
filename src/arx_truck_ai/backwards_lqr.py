@@ -4,8 +4,9 @@ from beamngpy import Vehicle
 import numpy as np
 import scipy.linalg as la
 import time
+from arx_truck_ai.debugging_sys import registrar_estado, generar_grafico_evaluacion
 
-def calcular_matrices_lqr_obs(V0, D0):
+def calcular_matrices_lqr_obs(V0, D0, x3_delta_F2):
     """
     Calcula dinámicamente o senta las bases matemáticas para la 
     obtención de las matrices K (Ganancia LQR) y L (Observador Luenberger).
@@ -18,30 +19,51 @@ def calcular_matrices_lqr_obs(V0, D0):
     # Modelo Nominal Continuo (Marcha en Retroceso)
     A_bwd = np.array([
         [0, -v_eff, 0],
-        [0,      0, -v_eff/D0],
-        [0,      0,  v_eff/D0]
+        [0, 0, -v_eff / D0],
+        [0, 0, v_eff / D0]
     ])
-    B_bwd = np.array([[0], [0], [-v_eff]])
+
+    B_bwd = np.array([
+        [0],
+        [0],
+        [-v_eff]
+    ])
+
     C = np.array([[1, 0, 0]])
     
     # Aumentamos el modelo añadiendo un estado extra para el error integral
     A_aug = np.zeros((4, 4))
     A_aug[0:3, 0:3] = A_bwd
+
+    # Integrador
     A_aug[3, 0:3] = -C
+
     B_aug = np.zeros((4, 1))
     B_aug[0:3, :] = B_bwd
     
     # Matrices de penalización extraídas de modelaje.m
-    Q_lqr = np.diag([10, 100, 1000, 500])
-    R_lqr = np.array([[1]])
+    # Penalización
+    Q_lqr = np.diag([
+        1000,   # error lateral
+        3000,   # error angular
+        800,    # articulación
+        300     # integrador
+    ])
+    
+    R_lqr = np.array([[1500]])
     
     # Cálculo de Ganancias Óptimas LQR usando Ecuación de Riccati Continua (CARE)
-    X_lqr = la.solve_continuous_are(A_aug, B_aug, Q_lqr, R_lqr)
+    X_lqr = la.solve_continuous_are(
+        A_aug,
+        B_aug,
+        Q_lqr,
+        R_lqr
+    )
     K_aug = np.linalg.inv(R_lqr) @ B_aug.T @ X_lqr
     
     # Diseño del Observador de Estados (Filtro de Kalman / LQR Dual)
     # Asumimos que sólo medimos y2 (la cámara estima). Penalizamos error de estimación.
-    Q_obs = 1e6 * np.eye(3)
+    Q_obs = 10.0 * np.eye(3)
     R_obs = np.array([[1]])
     X_obs = la.solve_continuous_are(A_bwd.T, C.T, Q_obs, R_obs)
     L_obs = (np.linalg.inv(R_obs) @ C @ X_obs).T
@@ -49,7 +71,7 @@ def calcular_matrices_lqr_obs(V0, D0):
     return K_aug, L_obs
 
 def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trailer_roll, trailer_roll_rate, 
-                        velocidad, ruta, current_idx, dt, integrador_error, x_hat, 
+                        velocidad, ruta, current_idx, dt, integrador_error, x_hat, previous_steering,
                         min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5):
     """
     Control LQR Óptimo con variables de estado y Observador (Luenberger básico).
@@ -78,52 +100,40 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     # Si estamos en el tramo final
     if closest_idx >= len(ruta) - 2 and min_dist < 2.0:
         return 0.0, 0.0, 1.0, closest_idx, True, integrador_error, x_hat
-
-    # 2. Lookahead dinámico adaptativo para sacar el punto objetivo direccional (como transitorio LQR espacial)
-    lookahead = np.clip(min_lookahead + (k_lookahead_gain * abs(velocidad)), min_lookahead, max_lookahead)
-    target_idx = len(ruta) - 1
-    found_target = False
-    for i in range(closest_idx, len(ruta)):
-        pt = ruta[i]
-        dist = math.hypot(pos_trailer[0] - pt[0], pos_trailer[1] - pt[1])
-        if dist >= lookahead:
-            target_idx = i
-            found_target = True
-            break
-            
-    target_pt = ruta[target_idx]
-    if not found_target and len(ruta) > 1:
-        pt_last = ruta[-1]
-        pt_prev = ruta[-2]
-        dir_x = pt_last[0] - pt_prev[0]
-        dir_y = pt_last[1] - pt_prev[1]
-        norm = math.hypot(dir_x, dir_y)
-        if norm > 0:
-            dir_x /= norm
-            dir_y /= norm
-        target_pt = (pos_trailer[0] + dir_x * lookahead, pos_trailer[1] + dir_y * lookahead)
-
-    # 3. Cálculo de Errores Verdaderos para el modelo LQR
-    # A. Error angular (x2)
-    dx = target_pt[0] - pos_trailer[0]
-    dy = target_pt[1] - pos_trailer[1]
-    yaw_objetivo = math.atan2(dy, dx)
-    yaw_objetivo_reversa = (yaw_objetivo + math.pi) % (2 * math.pi) - math.pi
     
-    # Error direccional del tráiler respecto a la meta (yaw_trailer)
-    x2_error_angular = (yaw_objetivo_reversa - psi_trailer + math.pi) % (2 * math.pi) - math.pi
+    # B. Error lateral (x1 o "cross track error") 
+    # Proyección ortogonal directa de la distancia entre el tráiler y el segmento de la ruta para evitar zonas muertas angulares
+    pt_actual_tr = ruta[closest_idx]
+    pt_siguiente_tr = ruta[min(closest_idx + 1, len(ruta) - 1)]
+    dx_path = pt_siguiente_tr[0] - pt_actual_tr[0]
+    dy_path = pt_siguiente_tr[1] - pt_actual_tr[1]
+    yaw_path = math.atan2(dy_path, dx_path)
+    dx_tr = pos_trailer[0] - pt_actual_tr[0]
+    dy_tr = pos_trailer[1] - pt_actual_tr[1]
+    x1_error_lateral = dy_tr * math.cos(yaw_path) - dx_tr * math.sin(yaw_path)
 
-    # B. Error lateral (x1 o "cross track error") aproximado usando trigonometría simple
-    # dist * sin(yaw_error) es la distancia perpendicular a la trayectoria ideal
-    x1_error_lateral = min_dist * math.sin(x2_error_angular)
+    # 2. Lookahead: solo se usa para avanzar el índice, no para calcular x2
+    dist_error = abs(x1_error_lateral)
+    lookahead = np.clip(min_lookahead + (k_lookahead_gain * abs(velocidad)) - (dist_error * 2), 2.0, 10.0)
+    # (El bloque de búsqueda de target_idx puede eliminarse si no se usa target_pt en ningún otro lado)
 
-    # C. Águlo de articulación (x3)
-    x3_delta_F2 = delta_F2
-    
+    # 3. Errores para el modelo LQR
+
+    # A. Error angular (x2): alinear el tráiler con la dirección del segmento de ruta
+    psi_trailer_reversa = psi_trailer + math.pi  # el tráiler se mueve hacia atrás
+    x2_error_angular = math.atan2(
+        math.sin(yaw_path - psi_trailer_reversa),
+        math.cos(yaw_path - psi_trailer_reversa)
+    )
+
+    # C. Articulación
+    x3_delta_F2 = np.clip(delta_F2, -1.1, 1.1)
+
     # D. Acumulador integral (x4)
-    integrador_error += x1_error_lateral * dt
+    if abs(x1_error_lateral) < 0.1: 
+        integrador_error += x1_error_lateral * dt
     # Limitamos la cuerda del integrador para evitar Wind-up catastrófico
-    integrador_error = np.clip(integrador_error, -5.0, 5.0)
+    integrador_error = np.clip(integrador_error, -0.5, 0.5)
 
     velocidad_abs = abs(velocidad)
 
@@ -132,37 +142,22 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
 
     # Cálculo dinámico basado en la matriz de Riccati (Computado On-The-Fly desde base de MATLAB modelaje.m)
     # D0 (distancia enganche a caja) la dejamos constante en 5.0 para el modelo nominal
-    K_mimo, L_obs = calcular_matrices_lqr_obs(velocidad_abs, 5.0)
+    K_mimo, L_obs = calcular_matrices_lqr_obs(velocidad_abs, 5.0, x3_delta_F2)
 
-    # 4. Implementación del OBSERVADOR DUAL (Filtro de Luenberger sobre estados Físicos)
-    # Extraemos el sub-estado físico (los 3 primeros elementos de x_hat)
-    x_hat_fisico = x_hat[0:3, :]
-    
-    # Modelado dinámico numérico (Euler Forward Continuous-to-Discrete) usando matrices dinámicas
-    v_eff = velocidad_abs if velocidad_abs > 0.1 else 0.1
-    A_bwd_dyn = np.array([
-        [0, -v_eff, 0],
-        [0, 0, -v_eff/5.0],
-        [0, 0, v_eff/5.0]
-    ])
-    B_bwd_dyn = np.array([[0], [0], [-v_eff]])
-    C_nominal = np.array([[1, 0, 0]])
-
-    # Predecimos la derivada del estado estimado (x_dot = A*x_hat + B*u + L*(y - C*x_hat))
-    # Para el "u" usamos la acción calculada en el paso anterior, pero aquí simplificamos a 0 asumiendo actualización causal o u_previa
-    # Para mayor rigurosidad, el error de innovación e_y = y_medido - y_estimado:
-    y_estimado = C_nominal @ x_hat_fisico
-    x_dot_estimado = A_bwd_dyn @ x_hat_fisico + L_obs @ (y_medido - y_estimado)
-    
-    x_hat_fisico = x_hat_fisico + (x_dot_estimado * dt)
-    
-    # Reensamblamos el vector del sistema MIMO completo de orden 4 agregando el integrador que controlamos de manera limpia, sin ruido.
-    x_hat[0:3, :] = x_hat_fisico
-    x_hat[3, 0] = integrador_error
+    # Inyección directa de las lecturas físicas de los sensores de orientación y articulación
+    # Evita que el sistema asuma estados lineales nulos cuando la dinámica entra en el régimen no lineal del efecto tijera
+    x_hat[0,0] = x1_error_lateral
+    x_hat[1,0] = x2_error_angular
+    x_hat[2,0] = x3_delta_F2
+    x_hat[3,0] = integrador_error
     
     # 5. Ganancias MIMO y Ejecución LQR
     # Cálculo formal óptimo: u = -K * x 
-    steering_raw = - float(K_mimo @ x_hat)
+    u_lqr = - float(K_mimo @ x_hat) # Hay que adecuar el valor dentro de los límites
+
+    max_ruedas_rad = 0.6
+    steering_raw = - (u_lqr / max_ruedas_rad)
+
     
     # PREVENCIÓN EXTRA: Sistema de Suspensión Dinámica (8-DOF Active Control Anti-Roll)
     limite_roll = 0.08
@@ -174,6 +169,10 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
 
     # Castigamos u también en el modelo LQR porque la dinámica "Soft Body" no está tabulada en A y B.
     steering_raw *= atenuacion_dinamica
+
+    # if abs(delta_F2) > 0.2: # esta fue una medida desesperada, pero no debería usarse porque solamente evita el jackknife
+    #    steering_raw = -np.sign(delta_F2) * 0.9 # Contra-volante forzado para evitar jackknife
+
     steering = np.clip(steering_raw, -1.0, 1.0)
     
     # Bucle de velocidad básico
@@ -187,14 +186,12 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
         throttle = 0.0
         brake = np.clip(-kp_vel * error_vel * 0.5, 0.0, 1.0)
 
-    # Añadimos la respuesta direccional B*u al estado estimado actual para la próxima iteración.
-    # Sabemos que B solo afecta fuertemente la variable física x3 (y derivadamente el resto en el siguiente dt)
-    x_hat[0:3, :] += B_bwd_dyn * steering_raw * dt
-
-    return steering, throttle, brake, closest_idx, False, integrador_error, x_hat
+    return steering, throttle, brake, closest_idx, False, integrador_error, x_hat, x1_error_lateral, x2_error_angular, x3_delta_F2, steering_raw
 
 
 def main():
+    start_time_log = time.time()
+
     truck_trailer, orig = bng_open.main()
 
     truck_trailer.bng.control.pause()
@@ -211,6 +208,7 @@ def main():
     last_time = time.time()
     previous_delta_F2 = 0.0
     previous_trailer_roll = 0.0
+    previous_steering = 0.0
     
     # Estructura del Estado Estimado (Error lateral, Error angular, Articulación, Error Integral)
     x_hat = np.zeros((4, 1))
@@ -237,20 +235,32 @@ def main():
         last_time = current_time
 
         # Control Estado LQR (MIMO + Observador)
-        steering, throttle, brake, current_idx, finished, integrador_error, x_hat = control_lqr_reversa(
-            pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trailer_roll, trailer_roll_rate, 
-            velocidad, route_points, current_idx, dt, integrador_error, x_hat
-        )
+        steering, throttle, brake, current_idx, finished, integrador_error, x_hat, x1, x2, x3, s_raw = control_lqr_reversa(
+        pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trailer_roll, trailer_roll_rate, 
+        velocidad, route_points, current_idx, dt, integrador_error, x_hat, previous_steering=previous_steering,
+        min_lookahead=2.0, max_lookahead=8.0, k_lookahead_gain=1.0
+    )
 
         truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)
+        
+        # Calcular tiempo relativo y guardar estado
+        t_sim = current_time - start_time_log
+        registrar_estado(t_sim, x1, x2, x3, s_raw)
+
+        previous_steering = steering
 
         if finished:
-            print("Ruta de reversa LQR completada. Frenando y devolviendo control manual (en Neutro)...")
+            print("Ruta de reversa LQR completada. Frenando...")
+            truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=0, gear=0)
+            break
+        elif abs(delta_F2) > 1.0: # Condición de Jackknife (aprox 57 grados)
+            print(f"¡Jackknife inminente detectado! (Articulación: {delta_F2:.2f} rad). Abortando para graficar...")
             truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=0, gear=0)
             break
 
+    # Cuando salimos del bucle, graficamos
+    generar_grafico_evaluacion()
     input('Presione enter cuando termine la simulación en reversa (MIMO-LQR)...')
-    # truck_trailer.bng.close()
 
 if __name__ == "__main__":
     main()

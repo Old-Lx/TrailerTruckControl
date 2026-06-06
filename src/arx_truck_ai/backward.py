@@ -1,5 +1,6 @@
 import math
 from arx_truck_ai import bng_open
+from arx_truck_ai.debugging_sys import registrar_estado
 from beamngpy import Vehicle
 import numpy as np
 import time
@@ -14,12 +15,12 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
     if len(ruta) == 0:
         return 0.0, 0.0, 1.0, current_idx, True
 
-    # 0. Implementar Lookahead Dinámico
+    # Implementar Lookahead Dinámico
     # Al ir más rápido, busca puntos más lejanos limitando sobrecorrecciones.
     # Al ir más lento, acota el radio ganando enorme precisión.
     lookahead = np.clip(min_lookahead + (k_lookahead_gain * abs(velocidad)), min_lookahead, max_lookahead)
 
-    # 1. Encontrar el punto más cercano para el TRÁILER
+    # Encontrar el punto más cercano para el TRÁILER
     min_dist = float('inf')
     closest_idx = current_idx
     search_limit = min(current_idx + 100, len(ruta))
@@ -30,7 +31,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
             min_dist = dist
             closest_idx = i
 
-    # 2. Busca el punto "lookahead" a una distancia de la posición actual del TRÁILER
+    # Busca el punto "lookahead" a una distancia de la posición actual del TRÁILER
     # Por defecto apuntamos al último punto de la ruta en caso de que estemos cerca del final
     target_idx = len(ruta) - 1
     found_target = False
@@ -58,7 +59,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
         # Extrapolamos el punto objetivo artificialmente hacia el horizonte manteniendo el lookahead real
         target_pt = (pos_trailer[0] + dir_x * lookahead, pos_trailer[1] + dir_y * lookahead)
 
-    # 3. Calcular el ángulo objetivo (Heading objetivo hacia el punto)
+    # Calcular el ángulo objetivo (Heading objetivo hacia el punto)
     dx = target_pt[0] - pos_trailer[0]
     dy = target_pt[1] - pos_trailer[1]
     yaw_objetivo = math.atan2(dy, dx)
@@ -68,11 +69,11 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
     # es el opuesto al yaw frontal.
     yaw_objetivo_reversa = (yaw_objetivo + math.pi) % (2 * math.pi) - math.pi
 
-    # 4. Errores direccionales individuales
+    # Errores direccionales individuales
     e_trailer = (yaw_objetivo_reversa - psi_trailer + math.pi) % (2 * math.pi) - math.pi
     e_truck = (yaw_objetivo_reversa - psi_truck + math.pi) % (2 * math.pi) - math.pi
 
-    # 5. Ganancias del Contramovimiento (Teoría adaptada a BeamNG con Balance Amortiguado)
+    # Ganancias del Contramovimiento
     # En BeamNG, steering > 0 gira las ruedas a la derecha, lo que empuja la cola del 
     # camión a la izquierda, la nariz del tráiler a la izquierda, y su cola a la derecha.
     # Por ende, necesitamos k_trailer POSITIVO frente al error del tráiler.
@@ -85,7 +86,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
     k_trailer = 1.10  
     k_truck = -0.85      
 
-    # 6. Histéresis Anti-Jackknife en casos de pánico crítico
+    # Histéresis Anti-Jackknife en casos de pánico crítico
     # Implementación de la Prevención Derivativa de Plegamiento (Rate of Change)
     # Límite duro estricto (0.45 rad, apróx 25°).
     # Límite blando (0.30 rad) combidado con una inercia angular peligrosa (> 0.20 rad/s)
@@ -99,7 +100,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
         k_trailer = 0.15 
         k_truck = -1.20
 
-    # 7. Integración Dinámica de Suspensión (8-DOF Active Yaw/Roll Control)
+    # Integración Dinámica de Suspensión (8-DOF Active Yaw/Roll Control)
     # Evaluamos la estabilidad gravitacional de las masas (Trailer Roll)
     # Un "roll" de 0.08 rad (~4.5°) ya es peligroso para un tráiler con carga.
     limite_roll = 0.08
@@ -120,7 +121,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
     # Al inyectarlo en BeamNG, steering > 0 gira la llanta a la derecha. 
     steering = np.clip(steering_raw, -1.0, 1.0)
 
-    # 8. Control de velocidad (Magnitud absoluta de V1) y Anti-derrape
+    # Control de velocidad (Magnitud absoluta de V1) y Anti-derrape
     velocidad_objetivo = 2.0 # m/s hacia atrás (al ser gear=-1, throttle produce movimiento trasero)
     
     # Si la atenuación está muy activa (mucho roll), forzamos una reducción severa de la velocidad objetivo
@@ -147,6 +148,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
 
 
 def main():
+    start_time_log = time.time()
     truck_trailer, orig = bng_open.main()
 
     truck_trailer.bng.control.pause()
@@ -199,6 +201,11 @@ def main():
         )
 
         truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)
+
+        current_time = time.time()
+
+        t_sim = current_time - start_time_log
+        registrar_estado(t_sim, psi_trailer, psi_camion, delta_F2, steering)
 
         # Si llegamos al final de la ruta generada (en reversa)
         if finished:
