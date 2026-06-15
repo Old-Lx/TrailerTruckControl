@@ -18,9 +18,9 @@ def calcular_matrices_lqr_obs(V0, D0, x3_delta_F2):
     
     # Modelo Nominal Continuo (Marcha en Retroceso)
     A_bwd = np.array([
-        [0, -v_eff, 0],
-        [0, 0, -v_eff / D0],
-        [0, 0, v_eff / D0]
+        [0,      -v_eff,          0        ],
+        [0,       0,          -v_eff/D0    ],
+        [0,   v_eff/D0,       -v_eff/D0   ]  # A[2,1] = +v/D0, A[2,2] = -v/D0
     ])
 
     B_bwd = np.array([
@@ -44,13 +44,16 @@ def calcular_matrices_lqr_obs(V0, D0, x3_delta_F2):
     # Matrices de penalización extraídas de modelaje.m
     # Penalización
     Q_lqr = np.diag([
-        1000,   # error lateral
-        3000,   # error angular
-        800,    # articulación
-        300     # integrador
+        5000,   # error lateral
+        100,   # error angular
+        8000,    # articulación
+        100     # integrador
     ])
-    
-    R_lqr = np.array([[1500]])
+
+    if (abs(x3_delta_F2) < 0.03):       
+        R_lqr = np.array([[5000]])
+    else:
+        R_lqr = np.array([[500]])
     
     # Cálculo de Ganancias Óptimas LQR usando Ecuación de Riccati Continua (CARE)
     X_lqr = la.solve_continuous_are(
@@ -72,7 +75,7 @@ def calcular_matrices_lqr_obs(V0, D0, x3_delta_F2):
 
 def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trailer_roll, trailer_roll_rate, 
                         velocidad, ruta, current_idx, dt, integrador_error, x_hat, previous_steering,
-                        min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5):
+                        min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5, D0=5.0):
     """
     Control LQR Óptimo con variables de estado y Observador (Luenberger básico).
     Retorna (steering, throttle, brake, next_idx, finished, nuevo_integrador, x_hat_nuevo).
@@ -130,10 +133,10 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     x3_delta_F2 = np.clip(delta_F2, -1.1, 1.1)
 
     # D. Acumulador integral (x4)
-    if abs(x1_error_lateral) < 0.1: 
+    if abs(x1_error_lateral) < 0.03: 
         integrador_error += x1_error_lateral * dt
     # Limitamos la cuerda del integrador para evitar Wind-up catastrófico
-    integrador_error = np.clip(integrador_error, -0.5, 0.5)
+    integrador_error = np.clip(integrador_error, -0.15, 0.15)
 
     velocidad_abs = abs(velocidad)
 
@@ -141,13 +144,21 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     y_medido = np.array([[x1_error_lateral]]) # El observador (L_obs) del script de MATLAB mide C = [1,0,0], asume que medimos solo error lateral cross-track.
 
     # Cálculo dinámico basado en la matriz de Riccati (Computado On-The-Fly desde base de MATLAB modelaje.m)
-    # D0 (distancia enganche a caja) la dejamos constante en 5.0 para el modelo nominal
-    K_mimo, L_obs = calcular_matrices_lqr_obs(velocidad_abs, 5.0, x3_delta_F2)
+    # D0 viene del parámetro de la función — cambiar D0_NOMINAL en main() para calibrar
+    K_mimo, L_obs = calcular_matrices_lqr_obs(velocidad_abs, D0, x3_delta_F2)
 
     # Inyección directa de las lecturas físicas de los sensores de orientación y articulación
     # Evita que el sistema asuma estados lineales nulos cuando la dinámica entra en el régimen no lineal del efecto tijera
+
+    # Zona muerta suave sobre x2: cuando x3 está cerca de cero (recuperándose),
+    # reducir el peso de x2 para que no domine y arrastre al volante en dirección
+    # incorrecta justo al cruzar el cero. K[1]*x2 se silencia progresivamente
+    # debajo de 0.15 rad de articulación.
+    peso_x2 = float(np.clip(abs(x3_delta_F2) / 0.15, 0.0, 1.0))
+    x2_efectivo = x2_error_angular * peso_x2
+
     x_hat[0,0] = x1_error_lateral
-    x_hat[1,0] = x2_error_angular
+    x_hat[1,0] = x2_efectivo        # x2 pesado según la magnitud de x3
     x_hat[2,0] = x3_delta_F2
     x_hat[3,0] = integrador_error
     
@@ -155,9 +166,9 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     # Cálculo formal óptimo: u = -K * x 
     u_lqr = - float(K_mimo @ x_hat) # Hay que adecuar el valor dentro de los límites
 
+    # Amortiguamiento activo de la articulación — frena el crecimiento de x3
     max_ruedas_rad = 0.6
-    steering_raw = - (u_lqr / max_ruedas_rad)
-
+    steering_raw = -(u_lqr / max_ruedas_rad)
     
     # PREVENCIÓN EXTRA: Sistema de Suspensión Dinámica (8-DOF Active Control Anti-Roll)
     limite_roll = 0.08
@@ -190,8 +201,6 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
 
 
 def main():
-    start_time_log = time.time()
-
     truck_trailer, orig = bng_open.main()
 
     truck_trailer.bng.control.pause()
@@ -214,6 +223,22 @@ def main():
     x_hat = np.zeros((4, 1))
     integrador_error = 0.0
 
+    delta_F2_rate_filtrada = 0.0
+    alpha_rate = 0.3  # 0=sin filtro, 1=completamente suavizado
+
+    # ── Diagnóstico de D0 ──────────────────────────────────────────────────────
+    # En la primera lectura de sensores, imprimir delta_F2 inicial y velocidad
+    # para confirmar que el sensor de articulación funciona correctamente.
+    # Si tienes acceso a pos_hitch o pos_cabina, calcular D0_real aquí.
+    # Probar D0 = 3.0, 4.0, 5.0, 6.0, 7.0 cambiando el valor en la llamada
+    # a calcular_matrices_lqr_obs(velocidad_abs, D0_NOMINAL, x3_delta_F2).
+    D0_NOMINAL = 3.0  # ← cambiar este valor entre pruebas para calibrar D0
+    # ──────────────────────────────────────────────────────────────────────────
+
+    primer_tick = True
+
+    start_time_log = time.time()
+
     while(True):
         sensores = truck_trailer.read_sensors(is_reverse=True)
         current_time = time.time()
@@ -226,8 +251,14 @@ def main():
         pos_trailer = sensores["trailer_pos"]
         trailer_roll = sensores["trailer_roll"]
 
+        if primer_tick:
+            print(f"[D0-DIAG] D0_NOMINAL={D0_NOMINAL} | delta_F2_inicial={delta_F2:.4f} rad | velocidad={velocidad:.3f} m/s")
+            print(f"[D0-DIAG] pos_trailer={pos_trailer}")
+            primer_tick = False
+
         # Tasas de cambio (no se integran directo en LQR A/B, pero se guardan por seguridad de atenuación dinámica de masas y roll mode)
-        delta_F2_rate = (delta_F2 - previous_delta_F2) / dt
+        delta_F2_rate_cruda = (delta_F2 - previous_delta_F2) / dt
+        delta_F2_rate_filtrada = alpha_rate * delta_F2_rate_filtrada + (1 - alpha_rate) * delta_F2_rate_cruda
         trailer_roll_rate = (trailer_roll - previous_trailer_roll) / dt
         
         previous_delta_F2 = delta_F2
@@ -236,9 +267,9 @@ def main():
 
         # Control Estado LQR (MIMO + Observador)
         steering, throttle, brake, current_idx, finished, integrador_error, x_hat, x1, x2, x3, s_raw = control_lqr_reversa(
-        pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trailer_roll, trailer_roll_rate, 
+        pos_trailer, psi_trailer, delta_F2, delta_F2_rate_filtrada, trailer_roll, trailer_roll_rate, 
         velocidad, route_points, current_idx, dt, integrador_error, x_hat, previous_steering=previous_steering,
-        min_lookahead=2.0, max_lookahead=8.0, k_lookahead_gain=1.0
+        min_lookahead=2.0, max_lookahead=8.0, k_lookahead_gain=1.0, D0=D0_NOMINAL
     )
 
         truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)

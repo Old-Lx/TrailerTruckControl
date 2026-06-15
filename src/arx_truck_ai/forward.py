@@ -1,5 +1,5 @@
 import math
-
+from arx_truck_ai.debugging_sys import registrar_estado, generar_grafico_evaluacion
 from arx_truck_ai import bng_open
 from beamngpy import Vehicle
 import numpy as np
@@ -13,7 +13,7 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
 
     Cada idx es un índice en el arreglo de puntos de la ruta.
     """
-    if len(ruta) == 0:
+    if not len(ruta):
         return 0.0, 0.0, 1.0, current_idx, True
 
     # Implementar Lookahead Dinámico
@@ -42,6 +42,16 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
             break
 
     target_pt = ruta[target_idx]
+
+    # Cálculo del Error Lateral (cross-track error)
+    pt_actual_tr = ruta[closest_idx]
+    pt_siguiente_tr = ruta[min(closest_idx + 1, len(ruta) - 1)]
+    dx_path = pt_siguiente_tr[0] - pt_actual_tr[0]
+    dy_path = pt_siguiente_tr[1] - pt_actual_tr[1]
+    yaw_path = math.atan2(dy_path, dx_path)
+    dx_tr = pos_actual[0] - pt_actual_tr[0]
+    dy_tr = pos_actual[1] - pt_actual_tr[1]
+    error_lateral = dy_tr * math.cos(yaw_path) - dx_tr * math.sin(yaw_path)
 
     # Calcular el error de orientación (heading error)
     dx = target_pt[0] - pos_actual[0]
@@ -99,9 +109,10 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
         finished = True
         return 0.0, 0.0, 1.0, closest_idx, finished
 
-    return steering, throttle, brake, closest_idx, finished
+    return steering, throttle, brake, closest_idx, finished, error_lateral, yaw_error
 
 def main():
+    start_time_log = time.time()
     truck_trailer, orig = bng_open.main()
 
     # Posición de origen para el vehículo
@@ -109,51 +120,6 @@ def main():
     truck_trailer.bng.control.pause()
     truck_trailer.bng.settings.set_deterministic(60)
 
-    script = []
-
-    points = []
-    point_color = (0, 0, 0, 0.1)
-    sphere_coordinates = []
-    sphere_radii = []
-    sphere_colors = []
-
-    # Ruta senoidal
-    for i in range(2400):
-        node = {
-            #  Calculate the position as a sine curve that makes the truck
-            #  drive from left to right. The z-coordinate is not calculated in
-            #  any way because `ai.set_script` by default makes the polyline to
-            #  follow cling to the ground, meaning the z-coordinate will be
-            #  filled in automatically.
-            "x": 4 * np.sin(np.radians(i)) + orig[0],
-            "y": i * 0.2 + orig[1],
-            "z": orig[2],
-            #  Calculate timestamps for each node such that the speed between
-            #  points has a sinusoidal variance to it.
-            "t": (2 * i + (np.abs(np.sin(np.radians(i)))) * 64) / 64,
-        }
-        script.append(node)
-        points.append((node["x"], node["y"], node["z"]))
-
-        if i % 10 == 0:
-            sphere_coordinates.append((node["x"], node["y"], node["z"]))
-            sphere_radii.append(np.abs(np.sin(np.radians(i))) * 0.25)
-            sphere_colors.append((np.sin(np.radians(i)), 0, 0, 0.8))
-
-    ''' Esto añade las esferas al simulador, probablemente esto se borre porque la ruta debe verse sólo en la cámara 
-    truck_trailer.bng.debug.add_spheres(
-        sphere_coordinates, sphere_radii, sphere_colors, cling=True, offset=0.1
-    )
-    truck_trailer.bng.debug.add_polyline(points, point_color, cling=True, offset=0.1)
-    '''
-
-    # truck_trailer.bng.traffic.spawn()
-
-    # Make the truck's AI span the map
-    # truck_trailer.truck.ai.set_script(script)
-
-    # for i in range(65):
-    #    truck_trailer.bng.control.step(60)
     truck_trailer.bng.control.resume()
 
     current_idx = 0
@@ -176,6 +142,9 @@ def main():
         v1 = sensores["v1"]
         truck_roll = sensores["truck_roll"]
 
+        # Leemos delta_F2 (articulación) aunque estemos yendo hacia adelante, solo para la gráfica
+        delta_F2 = sensores.get("delta_F2", 0.0)
+
         # Calcular la rotación/inercia de balanceo (tasa de roll)
         truck_roll_rate = (truck_roll - previous_truck_roll) / dt
         previous_truck_roll = truck_roll
@@ -183,12 +152,15 @@ def main():
 
         # Calcula el control proporcional simple para continuar por la ruta generada
         # Utiliza la nueva configuración de lookahead dinámico y control amortiguado (Active Yaw)
-        steering, throttle, brake, current_idx, finished = control_proporcional(
+        steering, throttle, brake, current_idx, finished, error_lateral, yaw_error = control_proporcional(
             pos_camion, yaw_camion, truck_roll, truck_roll_rate, v1, route_points, current_idx
         )
 
         # Aplicar el comando al vehículo en el simulador
         truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0)
+
+        t_sim = current_time - start_time_log
+        registrar_estado(t_sim, error_lateral, yaw_error, delta_F2, steering)
 
         # Si llegamos al final de la trayectoria, detenemos el control autónomo
         if finished:
@@ -196,7 +168,8 @@ def main():
             # Se resetean los controles para dejar al usuario al mando
             truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=0)
             break
-
+        
+    generar_grafico_evaluacion(titulo='Evaluación Controlador Proporcional (Marcha Adelante)')
     input('Presione enter cuando termine la simulación...')
 
     # Disconnect BeamNG

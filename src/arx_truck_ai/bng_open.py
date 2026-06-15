@@ -23,7 +23,9 @@ def main():
      # Create a scenario in automation_test_track called Test Land
     scenario = Scenario("smallgrid", "Test Land", description="Implementación de un modelo de control para truck trailer") # tech_ground o autotest son los más despejados
 
-    orig, truck, trailer, route =  gen_truck_and_trailer(scenario, bng) #  detect_vehicles(bng)
+    direction = 'fwd'
+
+    orig, truck, trailer, route =  gen_truck_and_trailer(scenario, bng, direction) #  detect_vehicles(bng)
 
     # Place files defining our scenario for the simulator to read
     scenario.make(bng)

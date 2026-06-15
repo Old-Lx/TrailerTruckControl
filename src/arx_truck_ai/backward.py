@@ -1,6 +1,6 @@
 import math
 from arx_truck_ai import bng_open
-from arx_truck_ai.debugging_sys import registrar_estado
+from arx_truck_ai.debugging_sys import registrar_estado, generar_grafico_evaluacion
 from beamngpy import Vehicle
 import numpy as np
 import time
@@ -12,7 +12,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
     y Gestión de Suspensión Activa (Atenuación Anti-Vuelco).
     Retorna (steering, throttle, brake, next_idx, finished).
     """
-    if len(ruta) == 0:
+    if not len(ruta):
         return 0.0, 0.0, 1.0, current_idx, True
 
     # Implementar Lookahead Dinámico
@@ -59,6 +59,16 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
         # Extrapolamos el punto objetivo artificialmente hacia el horizonte manteniendo el lookahead real
         target_pt = (pos_trailer[0] + dir_x * lookahead, pos_trailer[1] + dir_y * lookahead)
 
+    # Cálculo del Error Lateral exacto para la gráfica
+    pt_actual_tr = ruta[closest_idx]
+    pt_siguiente_tr = ruta[min(closest_idx + 1, len(ruta) - 1)]
+    dx_path = pt_siguiente_tr[0] - pt_actual_tr[0]
+    dy_path = pt_siguiente_tr[1] - pt_actual_tr[1]
+    yaw_path = math.atan2(dy_path, dx_path)
+    dx_tr = pos_trailer[0] - pt_actual_tr[0]
+    dy_tr = pos_trailer[1] - pt_actual_tr[1]
+    x1_error_lateral = dy_tr * math.cos(yaw_path) - dx_tr * math.sin(yaw_path)
+
     # Calcular el ángulo objetivo (Heading objetivo hacia el punto)
     dx = target_pt[0] - pos_trailer[0]
     dy = target_pt[1] - pos_trailer[1]
@@ -84,7 +94,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
     # Ajustamos a: Path gain (suave) = 0.25, Damping gain (agresivo) = 0.85
     # Despejando: k_truck = -0.85, k_trailer = 0.25 - k_truck = 1.10
     k_trailer = 1.10  
-    k_truck = -0.85      
+    k_truck = -0.85
 
     # Histéresis Anti-Jackknife en casos de pánico crítico
     # Implementación de la Prevención Derivativa de Plegamiento (Rate of Change)
@@ -144,7 +154,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
         finished = True
         return 0.0, 0.0, 1.0, closest_idx, finished
 
-    return steering, throttle, brake, closest_idx, finished
+    return steering, throttle, brake, closest_idx, finished, x1_error_lateral, e_trailer
 
 
 def main():
@@ -196,7 +206,7 @@ def main():
         # Control Aditivo 
         # Utilizamos la nueva implementación que calcula el lookahead dinámicamente en base
         # a la velocidad (v1), acotándolo automáticamente dentro de parámetros predefinidos.
-        steering, throttle, brake, current_idx, finished = control_aditivo_histeresis(
+        steering, throttle, brake, current_idx, finished, error_lateral, error_angulo_trailer = control_aditivo_histeresis(
             pos_trailer, psi_trailer, psi_camion, delta_F2, delta_F2_rate, trailer_roll, trailer_roll_rate, velocidad, route_points, current_idx
         )
 
@@ -205,14 +215,15 @@ def main():
         current_time = time.time()
 
         t_sim = current_time - start_time_log
-        registrar_estado(t_sim, psi_trailer, psi_camion, delta_F2, steering)
+        registrar_estado(t_sim, error_lateral, error_angulo_trailer, delta_F2, steering)
 
         # Si llegamos al final de la ruta generada (en reversa)
         if finished:
             print("Ruta de reversa completada. Frenando y devolviendo control manual (en Neutro)...")
             truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=0, gear=0)
             break
-
+        
+    generar_grafico_evaluacion(titulo='Evaluación Controlador Aditivo (Marcha Atrás)')
     input('Presione enter cuando termine la simulación en reversa...')
 
     # truck_trailer.bng.close()
