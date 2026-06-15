@@ -201,7 +201,8 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
 
 
 def main():
-    truck_trailer, orig = bng_open.main()
+    direction = 'bwd'
+    truck_trailer, orig = bng_open.main(direction)
 
     truck_trailer.bng.control.pause()
     truck_trailer.bng.settings.set_deterministic(60)

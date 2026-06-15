@@ -4,7 +4,7 @@ import numpy as np
 from os import getenv
 from arx_truck_ai.truck_trailer import TruckTrailer, gen_truck_and_trailer
 
-def main():
+def main(direction: str):
     # Para esto se requiere generar un archivo .env y guardar las variables correspondientes
     load_dotenv()
     bng_home = getenv('BNG_HOME')
@@ -22,8 +22,6 @@ def main():
 
      # Create a scenario in automation_test_track called Test Land
     scenario = Scenario("smallgrid", "Test Land", description="Implementación de un modelo de control para truck trailer") # tech_ground o autotest son los más despejados
-
-    direction = 'bwd'
 
     orig, truck, trailer, route =  gen_truck_and_trailer(scenario, bng, direction) #  detect_vehicles(bng)
 

@@ -113,7 +113,8 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
 
 def main():
     start_time_log = time.time()
-    truck_trailer, orig = bng_open.main()
+    direction = 'fwd'
+    truck_trailer, orig = bng_open.main(direction)
 
     # Posición de origen para el vehículo
 
