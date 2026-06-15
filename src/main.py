@@ -1,3 +1,3 @@
-from arx_truck_ai import forward, backward, backwards_lqr
+from arx_truck_ai import forward as fwd, backward as bwd, backwards_lqr as bwd_lqr
 
-backwards_lqr.main()
+bwd.main()

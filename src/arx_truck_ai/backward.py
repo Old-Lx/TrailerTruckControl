@@ -13,7 +13,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
     Retorna (steering, throttle, brake, next_idx, finished).
     """
     if not len(ruta):
-        return 0.0, 0.0, 1.0, current_idx, True
+        return 0.0, 0.0, 1.0, current_idx, True, 0.0, 0.0
 
     # Implementar Lookahead Dinámico
     # Al ir más rápido, busca puntos más lejanos limitando sobrecorrecciones.
@@ -67,7 +67,7 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
     yaw_path = math.atan2(dy_path, dx_path)
     dx_tr = pos_trailer[0] - pt_actual_tr[0]
     dy_tr = pos_trailer[1] - pt_actual_tr[1]
-    x1_error_lateral = dy_tr * math.cos(yaw_path) - dx_tr * math.sin(yaw_path)
+    error_lateral = dy_tr * math.cos(yaw_path) - dx_tr * math.sin(yaw_path)
 
     # Calcular el ángulo objetivo (Heading objetivo hacia el punto)
     dx = target_pt[0] - pos_trailer[0]
@@ -152,9 +152,9 @@ def control_aditivo_histeresis(pos_trailer, psi_trailer, psi_truck, delta_F2, de
     finished = False
     if closest_idx >= len(ruta) - 2 and min_dist < 2.0:
         finished = True
-        return 0.0, 0.0, 1.0, closest_idx, finished
+        return 0.0, 0.0, 1.0, closest_idx, finished, error_lateral, e_trailer
 
-    return steering, throttle, brake, closest_idx, finished, x1_error_lateral, e_trailer
+    return steering, throttle, brake, closest_idx, finished, error_lateral, e_trailer
 
 
 def main():
