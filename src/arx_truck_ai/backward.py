@@ -221,7 +221,6 @@ def control_aditivo_histeresis(
 
 
 def main():
-    start_time_log = time.time()
     direction = 'bwd'
     truck_trailer, orig = bng_open.main(direction)
 
@@ -245,6 +244,7 @@ def main():
     integral_ct_state = 0.0    # integral del error de carril
     panic_mode_state  = False  # estado de la histéresis de pánico
 
+    start_time_log = time.time()
     while(True):
         # Llama a read_sensors en modo reversa = True para levantar la Reverse Cam
         sensores = truck_trailer.read_sensors(is_reverse=True)
