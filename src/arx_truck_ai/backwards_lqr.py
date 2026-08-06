@@ -6,22 +6,99 @@ import scipy.linalg as la
 import time
 from arx_truck_ai.debugging_sys import registrar_estado, generar_grafico_evaluacion
 
-def calcular_matrices_lqr_obs(V0, D0, x3_delta_F2):
+# Puntos de operación (rad) para el gain scheduling sobre |delta_F2|.
+# Deben ir de menor a mayor. Cubren desde el equilibrio hasta la zona de
+# peligro de jackknife, con resolución suficiente para que la interpolación
+# capture la variación continua de R y Q_33.
+PUNTOS_OPERACION_DELTA_F2 = (0.0, 0.15, 0.30, 0.45)
+
+# Zona de transición para la penalización continua (rad). Antes de
+# ZONA_PELIGRO_INICIO el comportamiento es el nominal "suave"; después de
+# ZONA_PELIGRO_FIN se satura en el extremo "agresivo".
+# Recalibrado: arranca antes (0.10 en vez de 0.15) para que la corrección
+# sea gradual desde más temprano y no golpee el esfuerzo de control de golpe.
+ZONA_PELIGRO_INICIO = 0.10
+ZONA_PELIGRO_FIN = 0.45
+
+# Extremos de penalización del esfuerzo de control (R) y de la articulación (Q_33)
+# Recalibrado tras observar saturación severa del volante (-2.0 a +3.5 contra
+# el límite físico [-1,1]): se reduce mucho la agresividad de ambos extremos.
+R_MAX = 1500.0    # en x3=0: comportamiento suave, igual que antes
+R_MIN = 1400.0    # con este en 1800 y R_MAX en 5000 dura 20 segundos
+Q33_BASE = 8000.0   # en x3=0: igual que antes
+Q33_MAX = 18000.0   # antes 40000 -> demasiado agresivo, saturaba el actuador
+
+
+def _factor_suavizado(x3_abs, inicio=ZONA_PELIGRO_INICIO, fin=ZONA_PELIGRO_FIN):
     """
-    Calcula dinámicamente o senta las bases matemáticas para la 
-    obtención de las matrices K (Ganancia LQR) y L (Observador Luenberger).
-    Implementa computacionalmente en Python el modelo de "modelaje.m",
-    capaz de ser invocado localmente con el array vectorial del camión.
+    Smoothstep (C1 continuo, derivada nula en los extremos) que mapea
+    |x3| -> [0, 1]: 0 por debajo de 'inicio' (zona segura), 1 por encima
+    de 'fin' (zona de peligro saturada), transición suave en el medio.
+    Evita saltos bruscos de ganancia (que un sensor ruidoso convertiría
+    en chattering) frente al antiguo umbral duro en 0.03 rad.
     """
-    # Evitamos singularidades si el camión se detiene por completo
-    v_eff = V0 if abs(V0) > 0.1 else 0.1
-    
-    # Modelo Nominal Continuo (Marcha en Retroceso)
-    A_bwd = np.array([
-        [0,      -v_eff,          0        ],
-        [0,       0,          -v_eff/D0    ],
-        [0,   v_eff/D0,       -v_eff/D0   ]  # A[2,1] = +v/D0, A[2,2] = -v/D0
+    s = np.clip((x3_abs - inicio) / (fin - inicio), 0.0, 1.0)
+    return s * s * (3 - 2 * s)
+
+
+def _R_lqr_continuo(x3_op):
+    """
+    R decrece suave y progresivamente de R_MAX a R_MIN a medida que |x3_op|
+    se acerca/entra en la zona de peligro: menos penalización del esfuerzo
+    de control => contravolante más agresivo disponible para recuperar el
+    jackknife.
+    """
+    s = _factor_suavizado(abs(x3_op))
+    return R_MAX * (1 - s) + R_MIN * s
+
+
+def _Q33_continuo(x3_op):
+    """
+    Q_33 (penalización de la articulación) crece de forma EXPONENCIAL entre
+    Q33_BASE y Q33_MAX según el mismo factor de suavizado que R, para que el
+    LQR castigue cada vez más fuerte cualquier desviación de x3 a medida que
+    se acerca a la zona de peligro.
+    """
+    s = _factor_suavizado(abs(x3_op))
+    return Q33_BASE * (Q33_MAX / Q33_BASE) ** s
+
+
+def _construir_A_bwd(v_eff, D0):
+    """
+    Matriz de estado en retroceso — forma CALIBRADA PARA BEAMNG.DRIVE
+    (confirmada intencional, distinta de la forma pura de modelaje.m).
+
+    A diferencia del modelo nominal de modelaje.m (A[2,1]=0, A[2,2]=+V0/D0),
+    aquí se usa A[2,1]=+v_eff/D0 y A[2,2]=-v_eff/D0: el término extra y el
+    cambio de signo compensan convenciones de coordenadas y dinámicas del
+    motor de físicas de BeamNG que no están representadas en el modelo
+    analítico puro. Esta es la forma que debe usarse para el controlador
+    en ejecución; modelaje.m sigue siendo la referencia de diseño/análisis
+    (Bode, loop shaping, robustez), no la forma exacta de simulación.
+    """
+    return np.array([
+        [0,      -v_eff,        0        ],
+        [0,       0,        -v_eff/D0    ],
+        [0,   v_eff/D0,      -v_eff/D0    ]
     ])
+
+
+def calcular_K_punto_operacion(V0, D0, x3_op):
+    """
+    Resuelve la LQR (CARE) para un único punto de operación x3_op y devuelve
+    la ganancia aumentada K_aug (1x4). No hay observador: se asume
+    instrumentación completa de los 4 estados (medición directa).
+
+    A_bwd/B_bwd no dependen de x3_op (calibración BeamNG fija). La variación
+    entre puntos de operación viene de R_lqr y Q_33, ahora funciones
+    CONTINUAS de |x3_op| (ver _R_lqr_continuo / _Q33_continuo) en vez del
+    salto binario anterior: R baja suavemente y Q_33 sube exponencialmente
+    a medida que la articulación se acerca a la zona de peligro de
+    jackknife.
+    """
+    v_eff = V0 if abs(V0) > 0.1 else 0.1
+
+    A_bwd = _construir_A_bwd(v_eff, D0)
 
     B_bwd = np.array([
         [0],
@@ -30,62 +107,103 @@ def calcular_matrices_lqr_obs(V0, D0, x3_delta_F2):
     ])
 
     C = np.array([[1, 0, 0]])
-    
-    # Aumentamos el modelo añadiendo un estado extra para el error integral
+
+    # Modelo aumentado con estado extra de error integral
     A_aug = np.zeros((4, 4))
     A_aug[0:3, 0:3] = A_bwd
-
-    # Integrador
     A_aug[3, 0:3] = -C
 
     B_aug = np.zeros((4, 1))
     B_aug[0:3, :] = B_bwd
-    
-    # Matrices de penalización extraídas de modelaje.m
-    # Penalización
+
     Q_lqr = np.diag([
-        5000,   # error lateral
-        100,   # error angular
-        8000,    # articulación
-        100     # integrador
+        5000,                    # error lateral
+        4000,                    # error angular (antes 100 -- demasiado bajo para un sistema inestable)
+        _Q33_continuo(x3_op),    # articulación (crece exponencialmente cerca del jackknife)
+        100                      # integrador
     ])
 
-    if (abs(x3_delta_F2) < 0.03):       
-        R_lqr = np.array([[5000]])
-    else:
-        R_lqr = np.array([[500]])
-    
-    # Cálculo de Ganancias Óptimas LQR usando Ecuación de Riccati Continua (CARE)
-    X_lqr = la.solve_continuous_are(
-        A_aug,
-        B_aug,
-        Q_lqr,
-        R_lqr
-    )
+    R_lqr = np.array([[_R_lqr_continuo(x3_op)]])
+
+    X_lqr = la.solve_continuous_are(A_aug, B_aug, Q_lqr, R_lqr)
     K_aug = np.linalg.inv(R_lqr) @ B_aug.T @ X_lqr
-    
-    # Diseño del Observador de Estados (Filtro de Kalman / LQR Dual)
-    # Asumimos que sólo medimos y2 (la cámara estima). Penalizamos error de estimación.
-    Q_obs = 10.0 * np.eye(3)
-    R_obs = np.array([[1]])
-    X_obs = la.solve_continuous_are(A_bwd.T, C.T, Q_obs, R_obs)
-    L_obs = (np.linalg.inv(R_obs) @ C @ X_obs).T
-    
-    return K_aug, L_obs
+
+    return K_aug
+
+
+def precalcular_ganancias_lqr(V0_nominal, D0_nominal,
+                               puntos_operacion=PUNTOS_OPERACION_DELTA_F2):
+    """
+    Precalcula UNA SOLA VEZ (fuera del bucle de control) las matrices K en
+    cada punto de operación de articulación. Así se evita resolver la CARE
+    en cada tick a 60Hz; el bucle de control solo interpola.
+
+    V0_nominal / D0_nominal son el punto de DISEÑO fijo, no la velocidad
+    instantánea del camión. Esto es coherente con el análisis de
+    incertidumbre parametrica (+-10% de V0 y D0) que ya hiciste en
+    modelaje.m: esa validación de robustez es justo lo que permite fijar
+    la ganancia en un punto nominal sin recalcularla en tiempo real. Si en
+    tus pruebas la velocidad real se aleja de ese +-10% ya validado,
+    conviene volver a correr el análisis de Bode/loop-shaping del .m con el
+    nuevo rango, o extender esta tabla a una segunda dimensión sobre V.
+
+    Cada K en la tabla ya incorpora la variación continua de R y Q_33 (ver
+    _R_lqr_continuo / _Q33_continuo): al interpolar entre puntos de
+    operación consecutivos se obtiene un efecto anti-jackknife progresivo
+    de verdad, no una ganancia plana como cuando A no dependía de x3.
+
+    Devuelve un dict con 'puntos_operacion' y 'Ks' (lista de matrices K en
+    el mismo orden), listo para pasar a control_lqr_reversa.
+    """
+    Ks = [calcular_K_punto_operacion(V0_nominal, D0_nominal, op)
+          for op in puntos_operacion]
+    return {
+        'puntos_operacion': puntos_operacion,
+        'Ks': Ks,
+    }
+
+
+def interpolar_ganancia_lqr(x3_delta_F2, tabla_ganancias):
+    """
+    Interpola linealmente (sin resolver Riccati) la ganancia K entre los
+    puntos de operación precalculados, según |x3_delta_F2| actual.
+    """
+    puntos_operacion = tabla_ganancias['puntos_operacion']
+    Ks = tabla_ganancias['Ks']
+
+    x3_abs = min(abs(x3_delta_F2), puntos_operacion[-1])
+
+    for i in range(len(puntos_operacion) - 1):
+        x0, x1 = puntos_operacion[i], puntos_operacion[i + 1]
+        if x0 <= x3_abs <= x1:
+            w = (x3_abs - x0) / (x1 - x0) if (x1 - x0) > 1e-9 else 0.0
+            return (1 - w) * Ks[i] + w * Ks[i + 1]
+
+    return Ks[-1]
 
 def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trailer_roll, trailer_roll_rate, 
                         velocidad, ruta, current_idx, dt, integrador_error, x_hat, previous_steering,
-                        min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5, D0=5.0):
+                        min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5,
+                        tabla_ganancias=None):
     """
-    Control LQR Óptimo con variables de estado y Observador (Luenberger básico).
+    Control LQR Óptimo con variables de estado (Gain Scheduled, sin observador).
     Retorna (steering, throttle, brake, next_idx, finished, nuevo_integrador, x_hat_nuevo).
-    
+
     Estados del controlador MIMO:
     x1: Error lateral (desviación espacial hacia la ruta)
     x2: Error angular (heading error del remolque)
     x3: Ángulo de articulación (delta_F2)
     x4: Integrador del error (chattering prevention)
+
+    tabla_ganancias: dict devuelto por precalcular_ganancias_lqr(), calculado
+    UNA SOLA VEZ antes del bucle de control. Aquí NO se resuelve ninguna
+    Riccati; solo se interpola entre las K ya calculadas.
     """
+    if tabla_ganancias is None:
+        raise ValueError(
+            "control_lqr_reversa requiere 'tabla_ganancias' precalculada "
+            "con precalcular_ganancias_lqr() antes de entrar al bucle de control."
+        )
     if len(ruta) == 0:
         return 0.0, 0.0, 1.0, current_idx, True, integrador_error, x_hat
 
@@ -138,27 +256,21 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     # Limitamos la cuerda del integrador para evitar Wind-up catastrófico
     integrador_error = np.clip(integrador_error, -0.15, 0.15)
 
-    velocidad_abs = abs(velocidad)
-
-    # Vector de Estados Medidos (Físicos Directos o Aproximados por Cámara para el observador)
-    y_medido = np.array([[x1_error_lateral]]) # El observador (L_obs) del script de MATLAB mide C = [1,0,0], asume que medimos solo error lateral cross-track.
-
-    # Cálculo dinámico basado en la matriz de Riccati (Computado On-The-Fly desde base de MATLAB modelaje.m)
-    # D0 viene del parámetro de la función — cambiar D0_NOMINAL en main() para calibrar
-    K_mimo, L_obs = calcular_matrices_lqr_obs(velocidad_abs, D0, x3_delta_F2)
+    # Instrumentación completa: los 4 estados se miden/estiman directamente
+    # (no hay observador). La ganancia sale de interpolar la tabla precalculada
+    # (sin resolver Riccati aquí) según el ángulo de articulación actual.
+    K_mimo = interpolar_ganancia_lqr(x3_delta_F2, tabla_ganancias)
 
     # Inyección directa de las lecturas físicas de los sensores de orientación y articulación
     # Evita que el sistema asuma estados lineales nulos cuando la dinámica entra en el régimen no lineal del efecto tijera
 
-    # Zona muerta suave sobre x2: cuando x3 está cerca de cero (recuperándose),
-    # reducir el peso de x2 para que no domine y arrastre al volante en dirección
-    # incorrecta justo al cruzar el cero. K[1]*x2 se silencia progresivamente
-    # debajo de 0.15 rad de articulación.
-    peso_x2 = float(np.clip(abs(x3_delta_F2) / 0.15, 0.0, 1.0))
-    x2_efectivo = x2_error_angular * peso_x2
-
+    # NOTA: se eliminó la zona muerta suave sobre x2 (peso_x2/x2_efectivo).
+    # Enmascaraba el error angular cerca de x3=0, justo donde el LQR más
+    # necesita verlo para corregir pequeñas desviaciones de heading antes de
+    # que degeneren en jackknife (línea recta = régimen donde x2 es la
+    # primera señal de alerta). Ahora se inyecta x2_error_angular puro.
     x_hat[0,0] = x1_error_lateral
-    x_hat[1,0] = x2_efectivo        # x2 pesado según la magnitud de x3
+    x_hat[1,0] = x2_error_angular
     x_hat[2,0] = x3_delta_F2
     x_hat[3,0] = integrador_error
     
@@ -231,10 +343,15 @@ def main():
     # En la primera lectura de sensores, imprimir delta_F2 inicial y velocidad
     # para confirmar que el sensor de articulación funciona correctamente.
     # Si tienes acceso a pos_hitch o pos_cabina, calcular D0_real aquí.
-    # Probar D0 = 3.0, 4.0, 5.0, 6.0, 7.0 cambiando el valor en la llamada
-    # a calcular_matrices_lqr_obs(velocidad_abs, D0_NOMINAL, x3_delta_F2).
+    # Probar D0 = 3.0, 4.0, 5.0, 6.0, 7.0 cambiando este valor.
     D0_NOMINAL = 3.0  # ← cambiar este valor entre pruebas para calibrar D0
     # ──────────────────────────────────────────────────────────────────────────
+
+    # Velocidad de DISEÑO (no la instantánea): coincide con el V0=2.0 de
+    # modelaje.m y con velocidad_objetivo del lazo de velocidad más abajo.
+    # Las K se precalculan aquí, UNA sola vez, antes de entrar al bucle a 60Hz.
+    V0_NOMINAL = 2.0
+    tabla_ganancias = precalcular_ganancias_lqr(V0_NOMINAL, D0_NOMINAL)
 
     primer_tick = True
 
@@ -266,11 +383,11 @@ def main():
         previous_trailer_roll = trailer_roll
         last_time = current_time
 
-        # Control Estado LQR (MIMO + Observador)
+        # Control Estado LQR (MIMO, Gain Scheduled, sin observador)
         steering, throttle, brake, current_idx, finished, integrador_error, x_hat, x1, x2, x3, s_raw = control_lqr_reversa(
         pos_trailer, psi_trailer, delta_F2, delta_F2_rate_filtrada, trailer_roll, trailer_roll_rate, 
         velocidad, route_points, current_idx, dt, integrador_error, x_hat, previous_steering=previous_steering,
-        min_lookahead=2.0, max_lookahead=8.0, k_lookahead_gain=1.0, D0=D0_NOMINAL
+        min_lookahead=2.0, max_lookahead=8.0, k_lookahead_gain=1.0, tabla_ganancias=tabla_ganancias
     )
 
         truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)
