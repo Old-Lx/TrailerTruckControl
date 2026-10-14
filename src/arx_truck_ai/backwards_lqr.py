@@ -4,7 +4,7 @@ from beamngpy import Vehicle
 import numpy as np
 import scipy.linalg as la
 import time
-from arx_truck_ai.debugging_sys import registrar_estado, generar_grafico_evaluacion
+from arx_truck_ai.debugging_sys import registrar_estado, generar_grafico_evaluacion, inicializar_telemetria
 
 # Puntos de operación (rad) para el gain scheduling sobre |delta_F2|.
 # Deben ir de menor a mayor. Cubren desde el equilibrio hasta la zona de
@@ -187,7 +187,8 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
                         tabla_ganancias=None):
     """
     Control LQR Óptimo con variables de estado (Gain Scheduled, sin observador).
-    Retorna (steering, throttle, brake, next_idx, finished, nuevo_integrador, x_hat_nuevo).
+    Retorna (steering, throttle, brake, next_idx, finished, nuevo_integrador, x_hat_nuevo,
+             x1_error_lateral, x2_error_angular, x3_delta_F2, steering_raw).
 
     Estados del controlador MIMO:
     x1: Error lateral (desviación espacial hacia la ruta)
@@ -205,7 +206,7 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
             "con precalcular_ganancias_lqr() antes de entrar al bucle de control."
         )
     if len(ruta) == 0:
-        return 0.0, 0.0, 1.0, current_idx, True, integrador_error, x_hat
+        return 0.0, 0.0, 1.0, current_idx, True, integrador_error, x_hat, 0.0, 0.0, 0.0, 0.0
 
     # 1. Encontrar el punto más cercano para el TRÁILER
     min_dist = float('inf')
@@ -220,7 +221,7 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
 
     # Si estamos en el tramo final
     if closest_idx >= len(ruta) - 2 and min_dist < 2.0:
-        return 0.0, 0.0, 1.0, closest_idx, True, integrador_error, x_hat
+        return 0.0, 0.0, 1.0, closest_idx, True, integrador_error, x_hat, 0.0, 0.0, 0.0, 0.0
     
     # B. Error lateral (x1 o "cross track error") 
     # Proyección ortogonal directa de la distancia entre el tráiler y el segmento de la ruta para evitar zonas muertas angulares
@@ -276,7 +277,7 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     
     # 5. Ganancias MIMO y Ejecución LQR
     # Cálculo formal óptimo: u = -K * x 
-    u_lqr = - float(K_mimo @ x_hat) # Hay que adecuar el valor dentro de los límites
+    u_lqr = - float((K_mimo @ x_hat).item()) # Hay que adecuar el valor dentro de los límites (.item(): compatible con NumPy>=2.4)
 
     # Amortiguamiento activo de la articulación — frena el crecimiento de x3
     max_ruedas_rad = 0.6
@@ -355,6 +356,9 @@ def main():
 
     primer_tick = True
 
+    # Telemetría CSV (entrada de evaluacion_resultados.py)
+    inicializar_telemetria("telemetria_lqr_recta.csv")
+
     start_time_log = time.time()
 
     while(True):
@@ -394,7 +398,18 @@ def main():
         
         # Calcular tiempo relativo y guardar estado
         t_sim = current_time - start_time_log
-        registrar_estado(t_sim, x1, x2, x3, s_raw)
+        # Se omite el tick de fin de ruta: ahí el controlador devuelve un frenado (steering=0)
+        # con errores en cero de relleno, no una muestra real de seguimiento.
+        # Se registra `steering` (comando aplicado, ya saturado a [-1,1]) y no `s_raw`, para que
+        # la columna sea comparable con forward/backward y con S_smooth. Si quieres seguir
+        # diagnosticando la saturación del LQR, pasa s_raw aquí temporalmente.
+        if not finished:
+            registrar_estado(
+                t_sim,
+                pos_trailer[0], pos_trailer[1],
+                route_points[current_idx][0], route_points[current_idx][1],
+                x1, x2, delta_F2, steering
+            )
 
         previous_steering = steering
 
@@ -412,4 +427,4 @@ def main():
     input('Presione enter cuando termine la simulación en reversa (MIMO-LQR)...')
 
 if __name__ == "__main__":
-    main()
+    main()
