@@ -1,9 +1,22 @@
 import math
 from arx_truck_ai import bng_open
-from arx_truck_ai.debugging_sys import registrar_estado, generar_grafico_evaluacion, generar_diagrama_ray_casting, inicializar_telemetria
+from arx_truck_ai.debugging_sys import (registrar_muestra, generar_grafico_evaluacion, generar_diagrama_ray_casting,
+                                       inicializar_telemetria, finalizar_telemetria)
+from arx_truck_ai import truck_trailer as tt
+from arx_truck_ai.fin_ruta import (distancia_restante, velocidad_limite_fin, debe_frenar,
+                                   punto_objetivo_extendido, indice_segmento, detener_en_fin)
 from beamngpy import Vehicle
 import numpy as np
 import time
+
+# ---------------------------------------------------------------------------
+# Fin de ruta (ver fin_ruta.py). El punto que debe detenerse en el final es trailer_pos.
+V_CRUCERO = 2.0          # m/s   velocidad de crucero en reversa
+A_APROXIMACION = 0.3     # m/s²  desaceleración del perfil de llegada: v_obj = sqrt(2*a*d_restante)
+V_LLEGADA = 0.5          # m/s   velocidad mínima del perfil mientras quede ruta
+A_FRENADO = 1.5          # m/s²  desaceleración que se ASUME con freno a fondo (conservadora)
+MARGEN_PARADA = 0.3      # m     margen extra antes del punto final
+# ---------------------------------------------------------------------------
 
 
 def _envolver_angulo(angulo):
@@ -154,11 +167,13 @@ def control_aditivo_histeresis(
     # sentido de avance de la ruta; misma convención que error_lateral en forward y
     # LQR). NO entra en la ley de control (Pure Pursuit consolidado): se devuelve
     # únicamente para registrar el error lateral real en el CSV de evaluación.
+    # En el último punto se usa el último segmento (antes quedaba e_ct = 0 en el tramo final).
     e_ct = 0.0
     seg_dir_usado = prev_seg_dir
-    if closest_idx < len(ruta) - 1:
-        pt_a_idx = ruta[closest_idx]
-        pt_b_idx = ruta[closest_idx + 1]
+    idx_seg = indice_segmento(ruta, closest_idx)
+    if len(ruta) > 1:
+        pt_a_idx = ruta[idx_seg]
+        pt_b_idx = ruta[idx_seg + 1]
         seg_dx_idx = pt_b_idx[0] - pt_a_idx[0]
         seg_dy_idx = pt_b_idx[1] - pt_a_idx[1]
         seg_len_idx = math.hypot(seg_dx_idx, seg_dy_idx)
@@ -183,19 +198,16 @@ def control_aditivo_histeresis(
 
     target_pt = ruta[target_idx]
 
-    # Si estamos en el tramo final y la ruta se acaba, proyectamos matemáticamente
-    # el último vector para que el "lookahead" nunca se reduzca a 0, evitando el jackknife de fin de ruta.
+    # Si estamos en el tramo final y la ruta se acaba, el objetivo se toma sobre la prolongación
+    # recta del último segmento ANCLADA EN EL ÚLTIMO PUNTO, a distancia `lookahead` del tráiler.
+    # El lookahead nunca se reduce a 0 (evita el jackknife de fin de ruta) y el tráiler sigue siendo
+    # atraído lateralmente hacia el punto final. (Proyectarlo desde el propio tráiler solo alineaba
+    # el rumbo: el conjunto seguía paralelo a la ruta, desviado, y se alejaba del punto final.)
     if not found_target and len(ruta) > 1:
-        pt_last = ruta[-1]
-        pt_prev = ruta[-2]
-        dir_x = pt_last[0] - pt_prev[0]
-        dir_y = pt_last[1] - pt_prev[1]
-        norm = math.hypot(dir_x, dir_y)
-        if norm > 0:
-            dir_x /= norm
-            dir_y /= norm
-        # Extrapolamos el punto objetivo artificialmente hacia el horizonte manteniendo el lookahead real
-        target_pt = (pos_trailer[0] + dir_x * lookahead, pos_trailer[1] + dir_y * lookahead)
+        target_pt = punto_objetivo_extendido(ruta, pos_trailer, lookahead)
+
+    # Distancia que falta hasta el final, medida A LO LARGO de la ruta (negativa si ya se pasó).
+    d_restante = distancia_restante(ruta, closest_idx, pos_trailer)
 
     # Calcular el ángulo objetivo (Heading objetivo hacia el punto)
     dx = target_pt[0] - pos_trailer[0]
@@ -316,8 +328,10 @@ def control_aditivo_histeresis(
     # Al inyectarlo en BeamNG, steering > 0 gira la llanta a la derecha. 
     steering = np.clip(steering_raw, -1.0, 1.0)
 
-    # Control de velocidad (Magnitud absoluta de V1) y Anti-derrape
-    velocidad_objetivo = 2.0 # m/s hacia atrás (al ser gear=-1, throttle produce movimiento trasero)
+    # Control de velocidad (Magnitud absoluta de V1) y Anti-derrape.
+    # Al ser gear=-1, throttle produce movimiento hacia atrás. Perfil de llegada: cerca del final
+    # la velocidad objetivo baja como sqrt(2*a*d_restante) para llegar despacio al punto final.
+    velocidad_objetivo = min(V_CRUCERO, velocidad_limite_fin(d_restante, A_APROXIMACION, V_LLEGADA))
     
     # Si la atenuación está muy activa (mucho roll), forzamos una reducción severa de la velocidad objetivo
     # para mitigar el derrape o vuelco inminente.
@@ -333,11 +347,13 @@ def control_aditivo_histeresis(
         throttle = 0.0
         brake = np.clip(-kp_vel * error_vel * 0.5, 0.0, 1.0)
 
-    # Verificar si hemos llegado al final de la ruta
+    # Verificar si hemos llegado al final de la ruta: frenar a fondo cuando la distancia de parada
+    # alcanza a la que queda (o si ya se pasó). Se mide a lo largo de la ruta, así que funciona
+    # aunque el tráiler llegue desviado lateralmente (antes exigía estar a < 2 m del último punto).
     finished = False
-    if closest_idx >= len(ruta) - 2 and min_dist < 2.0:
+    if debe_frenar(d_restante, velocidad, A_FRENADO, MARGEN_PARADA):
         finished = True
-        return 0.0, 0.0, 1.0, closest_idx, finished, panic_mode, e_trailer, e_trailer_rate_filtrada, seg_dir_usado, e_ct
+        return steering, 0.0, 1.0, closest_idx, finished, panic_mode, e_trailer, e_trailer_rate_filtrada, seg_dir_usado, e_ct
 
     return steering, throttle, brake, closest_idx, finished, panic_mode, e_trailer, e_trailer_rate_filtrada, seg_dir_usado, e_ct
 
@@ -346,34 +362,35 @@ def main():
     direction = 'bwd'
     truck_trailer, orig = bng_open.main(direction)
 
-    truck_trailer.bng.control.pause()
-    truck_trailer.bng.settings.set_deterministic(60)
-
     # Al poner la caja de cambios del camión en Reversa (Gear = -1), el acelerador lo desplazará hacia atrás
-    truck_trailer.truck.control(gear=-1)
-
-    truck_trailer.bng.control.resume()
+    truck_trailer.iniciar_simulacion(gear=-1)
 
     current_idx = 0
     route_points = truck_trailer.route
+    nombre_ruta = truck_trailer.nombre_ruta
+
+    # Telemetría (entrada de evaluacion_resultados.py): una fila por paso de simulación
+    inicializar_telemetria(f"telemetria_backward_{nombre_ruta}.csv", puntos_ruta=route_points, sentido=-1,
+                           punto_control='trailer', algoritmo='backward', ruta=nombre_ruta,
+                           tipo_ruta=tt.TIPO_RUTA, modo='sincrono' if tt.MODO_SINCRONO else 'libre',
+                           frecuencia_simulacion=tt.FRECUENCIA_SIMULACION,
+                           frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
+                           if tt.MODO_SINCRONO else None)
 
     # Variables de estado inicial para el subsistema derivativo del jackknifing y roll
     previous_delta_F2 = 0.0
     previous_trailer_roll = 0.0
-    last_time = time.time()
 
     # Estado para la máquina de histéresis de pánico
     panic_mode_state  = False
 
-    # Estado para el filtro EMA de delta_F2_rate (punto 1 de la ronda anterior:
-    # la derivada cruda es muy sensible al ruido del tick rate).
+    # Estado para el filtro EMA de delta_F2_rate (la derivada cruda es muy sensible al ruido).
     # NOTA DE CONVENCIÓN: filtrado_nuevo = alpha*filtrado_anterior + (1-alpha)*crudo.
     # alpha pondera el PASADO -> alpha MÁS BAJO = filtro MÁS reactivo (menos lag).
-    # Bajado de 0.3 a 0.15 para reducir el retraso de fase de la acción derivativa.
     delta_F2_rate_filtrada = 0.0
     alpha_rate = 0.15
 
-    # Estado para la acción derivativa sobre la trayectoria (punto 2 de la ronda anterior)
+    # Estado para la acción derivativa sobre la trayectoria
     prev_e_trailer_state = 0.0
     e_trailer_rate_filtrada_state = 0.0
 
@@ -381,15 +398,24 @@ def main():
     # índice cerca de curvas/rutas que se cruzan en el espacio)
     prev_seg_dir_state = None  # None en el primer tick: sin restricción todavía
 
-    # Telemetría CSV (entrada de evaluacion_resultados.py)
-    inicializar_telemetria("telemetria_backward_recta.csv")
+    t0 = None
+    t_ultimo_control = None
+    steering, throttle, brake = 0.0, 0.0, 0.0
+    e_trailer = e_ct = None
+    finished = False
+    resultado, info_fin = 'completada', {}
+    ciclo = 0
 
-    start_time_log = time.time()
-    while(True):
+    while True:
+        # En modo síncrono el control se recalcula cada `decimacion_control` pasos y la telemetría se
+        # registra en todos; en modo libre ambos ocurren en cada iteración.
+        es_ciclo_control = (ciclo % truck_trailer.decimacion_control == 0)
         # Llama a read_sensors en modo reversa = True para levantar la Reverse Cam
-        sensores = truck_trailer.read_sensors(is_reverse=True)
-        current_time = time.time()
-        dt = max(current_time - last_time, 1e-4) # el mximo entre ambos valores
+        sensores = truck_trailer.read_sensors(is_reverse=True, completo=es_ciclo_control)
+        t = sensores['t_sim']
+        if t0 is None:
+            t0 = t
+        t_rel = t - t0
 
         velocidad = sensores["v1"]
         psi_camion = sensores["psi_truck"]
@@ -398,72 +424,79 @@ def main():
         pos_trailer = sensores["trailer_pos"]
         trailer_roll = sensores["trailer_roll"]
 
-        # Calcular la tasa de cambio del ángulo de articulación (delta_F2_rate)
-        # y suavizarla con un EMA: la derivada cruda es muy sensible al ruido
-        # del tick rate, y esa sensibilidad alimentaba directamente el bang-bang.
-        delta_F2_rate_cruda = (delta_F2 - previous_delta_F2) / dt
-        delta_F2_rate_filtrada = alpha_rate * delta_F2_rate_filtrada + (1 - alpha_rate) * delta_F2_rate_cruda
-        previous_delta_F2 = delta_F2
+        if es_ciclo_control:
+            dt = (t - t_ultimo_control) if t_ultimo_control is not None else (truck_trailer.dt_control or 0.1)
+            dt = max(dt, 1e-4)
+            t_ultimo_control = t
 
-        # Calcular la fuerza lateral de balanceo (tasa de roll)
-        trailer_roll_rate = (trailer_roll - previous_trailer_roll) / dt
-        previous_trailer_roll = trailer_roll
+            # Tasa de cambio del ángulo de articulación (delta_F2_rate), suavizada con un EMA
+            delta_F2_rate_cruda = (delta_F2 - previous_delta_F2) / dt
+            delta_F2_rate_filtrada = alpha_rate * delta_F2_rate_filtrada + (1 - alpha_rate) * delta_F2_rate_cruda
+            previous_delta_F2 = delta_F2
 
-        last_time = current_time
+            # Calcular la fuerza lateral de balanceo (tasa de roll)
+            trailer_roll_rate = (trailer_roll - previous_trailer_roll) / dt
+            previous_trailer_roll = trailer_roll
 
-        # Control Aditivo (Pure Pursuit consolidado)
-        # Utilizamos la nueva implementación que calcula el lookahead dinámicamente en base
-        # a la velocidad (v1), acotándolo automáticamente dentro de parámetros predefinidos.
-        (steering, throttle, brake,
-         current_idx, finished,
-         panic_mode_state,             # realimentar estado de histéresis
-         e_trailer,                    # error angular actual (se realimenta como prev_e_trailer, ver abajo)
-         e_trailer_rate_filtrada_state,# realimentar salida EMA de la derivada de e_trailer
-         prev_seg_dir_state,           # realimentar dirección del segmento (continuidad de closest_idx)
-         e_ct                          # error lateral: SOLO telemetría, no entra en el control
-        ) = control_aditivo_histeresis(
-            pos_trailer, psi_trailer, psi_camion,
-            delta_F2, delta_F2_rate_filtrada,
-            trailer_roll, trailer_roll_rate,
-            velocidad, route_points, current_idx,
-            panic_mode  = panic_mode_state,
-            prev_e_trailer = prev_e_trailer_state,
-            e_trailer_rate_filtrada = e_trailer_rate_filtrada_state,
-            prev_seg_dir = prev_seg_dir_state,
-            alpha_ema_trailer = 0.15,
-            dt          = dt
-        )
-        prev_e_trailer_state = e_trailer  # para la derivada del siguiente tick
-
-        truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)
-
-        current_time = time.time()
-
-        t_sim = current_time - start_time_log
-        # Se omite el tick de fin de ruta: ahí el controlador devuelve un frenado
-        # (steering=0), no una muestra de seguimiento, y falsearía S_smooth.
-        if not finished:
-            registrar_estado(
-                t_sim,
-                pos_trailer[0], pos_trailer[1],
-                route_points[current_idx][0], route_points[current_idx][1],
-                e_ct, e_trailer, delta_F2, steering
+            # Control Aditivo (Pure Pursuit consolidado)
+            (steering, throttle, brake,
+             current_idx, finished,
+             panic_mode_state,             # realimentar estado de histéresis
+             e_trailer,                    # error angular actual (se realimenta como prev_e_trailer, ver abajo)
+             e_trailer_rate_filtrada_state,# realimentar salida EMA de la derivada de e_trailer
+             prev_seg_dir_state,           # realimentar dirección del segmento (continuidad de closest_idx)
+             e_ct                          # error lateral del controlador (diagnóstico)
+            ) = control_aditivo_histeresis(
+                pos_trailer, psi_trailer, psi_camion,
+                delta_F2, delta_F2_rate_filtrada,
+                trailer_roll, trailer_roll_rate,
+                velocidad, route_points, current_idx,
+                panic_mode  = panic_mode_state,
+                prev_e_trailer = prev_e_trailer_state,
+                e_trailer_rate_filtrada = e_trailer_rate_filtrada_state,
+                prev_seg_dir = prev_seg_dir_state,
+                alpha_ema_trailer = 0.15,
+                dt          = dt
             )
+            prev_e_trailer_state = e_trailer  # para la derivada del siguiente ciclo de control
+
+            truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)
+
+        # Telemetría: el tick de fin de ruta es un comando de frenado, no una muestra de seguimiento
+        if not finished:
+            registrar_muestra(t_rel, sensores, steering, control_actualizado=es_ciclo_control,
+                              error_lateral_ctrl=e_ct, error_angular_ctrl=e_trailer)
 
         if abs(delta_F2) >= 1:
             print("Jackknife :c")
             truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=0, gear=0)
-            generar_grafico_evaluacion(titulo='Evaluación Controlador Aditivo (Marcha Atrás) Jackknife')
+            resultado, info_fin = 'jackknife', dict(delta_F2_final_rad=float(delta_F2))
             break
-
 
         # Si llegamos al final de la ruta generada (en reversa)
         if finished:
-            print("Ruta de reversa completada. Frenando y devolviendo control manual (en Neutro)...")
-            truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=0, gear=0)
+            print("Fin de ruta: frenando hasta detener el conjunto...")
+            # Frena hasta detenerse y deja el camión con freno de mano, sin freno de servicio y en neutro.
+            sobrepaso, d_fin = detener_en_fin(truck_trailer, route_points, current_idx, 'trailer_pos',
+                                              steering=steering, is_reverse=True, gear=-1)
+            print(f"Conjunto detenido. Sobrepaso del tráiler a lo largo de la ruta: {sobrepaso:+.2f} m "
+                  f"(+ = se pasó del punto final) | distancia al punto final: {d_fin:.2f} m")
+            resultado, info_fin = 'completada', dict(sobrepaso_m=sobrepaso, distancia_final_m=d_fin)
             break
-        
-    generar_grafico_evaluacion(titulo='Evaluación Controlador Aditivo (Marcha Atrás)')
+        if t_rel > tt.DURACION_MAXIMA_S:
+            print(f"Tiempo máximo del experimento ({tt.DURACION_MAXIMA_S:.0f} s) alcanzado: deteniendo...")
+            sobrepaso, d_fin = detener_en_fin(truck_trailer, route_points, current_idx, 'trailer_pos',
+                                              steering=steering, is_reverse=True, gear=-1)
+            resultado, info_fin = 'tiempo_maximo', dict(sobrepaso_m=sobrepaso, distancia_final_m=d_fin)
+            break
+
+        truck_trailer.avanzar()      # modo síncrono: un paso de simulación (1/60 s); modo libre: nada
+        ciclo += 1
+
+    finalizar_telemetria(resultado, **info_fin)
+    truck_trailer.liberar_simulacion()
+    titulo = 'Evaluación Controlador Aditivo (Marcha Atrás)' + (' Jackknife' if resultado == 'jackknife' else '')
+    generar_grafico_evaluacion(titulo=titulo)
     input('Presione enter cuando termine la simulación en reversa...')
 
     # truck_trailer.bng.close()

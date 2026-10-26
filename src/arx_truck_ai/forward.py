@@ -1,9 +1,23 @@
 import math
-from arx_truck_ai.debugging_sys import registrar_estado, generar_grafico_evaluacion, inicializar_telemetria
+from arx_truck_ai.debugging_sys import (registrar_muestra, generar_grafico_evaluacion, inicializar_telemetria,
+                                       finalizar_telemetria)
+from arx_truck_ai import truck_trailer as tt
 from arx_truck_ai import bng_open
+from arx_truck_ai.fin_ruta import (distancia_restante, velocidad_limite_fin, debe_frenar,
+                                   punto_objetivo_extendido, indice_segmento, detener_en_fin)
 from beamngpy import Vehicle
 import numpy as np
 import time
+
+# ---------------------------------------------------------------------------
+# Fin de ruta (ver fin_ruta.py). El punto que debe detenerse en el final es truck_pos.
+V_CRUCERO = 6.0          # m/s   velocidad de crucero
+A_APROXIMACION = 0.6     # m/s²  desaceleración del perfil de llegada: v_obj = sqrt(2*a*d_restante)
+V_LLEGADA = 1.0          # m/s   velocidad mínima del perfil mientras quede ruta
+A_FRENADO = 2.0          # m/s²  desaceleración que se ASUME con freno a fondo (conservadora:
+                         #       si el camión frena más fuerte, se detiene un poco antes del final)
+MARGEN_PARADA = 0.5      # m     margen extra antes del punto final
+# ---------------------------------------------------------------------------
 
 def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, velocidad, ruta, current_idx, min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5):
     """
@@ -49,25 +63,22 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
     target_pt = ruta[target_idx]
 
     # Si estamos en el tramo final y la ruta se acaba (queda menos ruta que el lookahead),
-    # proyectamos matemáticamente el último vector de la ruta para que el "lookahead" nunca
-    # se reduzca a 0. Sin esto, el objetivo degeneraba en el punto más cercano (al costado o
-    # DETRÁS del camión) y el error de heading saltaba a ~±pi con el volante saturado.
-    # Es el mismo objetivo virtual (ray-casting) que usa el controlador aditivo en reversa.
+    # el objetivo se toma sobre la prolongación recta del último segmento ANCLADA EN EL ÚLTIMO
+    # PUNTO, a distancia `lookahead` del camión. Así el lookahead nunca se reduce a 0 y el camión
+    # sigue siendo atraído lateralmente hacia el punto final. (Proyectar el objetivo desde el
+    # propio camión solo alineaba el rumbo: el camión seguía paralelo a la ruta, desviado, y se
+    # alejaba del punto final.) Es el mismo objetivo virtual que usan los dos algoritmos de reversa.
     if not found_target and len(ruta) > 1:
-        pt_last = ruta[-1]
-        pt_prev = ruta[-2]
-        dir_x = pt_last[0] - pt_prev[0]
-        dir_y = pt_last[1] - pt_prev[1]
-        norm = math.hypot(dir_x, dir_y)
-        if norm > 0:
-            dir_x /= norm
-            dir_y /= norm
-        # Extrapolamos el punto objetivo artificialmente hacia el horizonte manteniendo el lookahead real
-        target_pt = (pos_actual[0] + dir_x * lookahead, pos_actual[1] + dir_y * lookahead)
+        target_pt = punto_objetivo_extendido(ruta, pos_actual, lookahead)
 
-    # Cálculo del Error Lateral (cross-track error)
-    pt_actual_tr = ruta[closest_idx]
-    pt_siguiente_tr = ruta[min(closest_idx + 1, len(ruta) - 1)]
+    # Distancia que falta hasta el final, medida A LO LARGO de la ruta (negativa si ya se pasó).
+    d_restante = distancia_restante(ruta, closest_idx, pos_actual)
+
+    # Cálculo del Error Lateral (cross-track error). En el último punto se usa el último
+    # segmento (con el punto final repetido el segmento tenía longitud 0 y rumbo indefinido).
+    idx_seg = indice_segmento(ruta, closest_idx)
+    pt_actual_tr = ruta[idx_seg]
+    pt_siguiente_tr = ruta[idx_seg + 1]
     dx_path = pt_siguiente_tr[0] - pt_actual_tr[0]
     dy_path = pt_siguiente_tr[1] - pt_actual_tr[1]
     yaw_path = math.atan2(dy_path, dx_path)
@@ -107,8 +118,9 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
     # La máxima dirección de BeamNG entra en un rango de [-1, 1]
     steering = np.clip(steering, -1.0, 1.0)
 
-    # Control de velocidad proporcional
-    velocidad_objetivo = 6.0 # m/s
+    # Control de velocidad proporcional, con perfil de llegada: cerca del final la velocidad
+    # objetivo baja como sqrt(2*a*d_restante) para llegar despacio y no pasarse del punto final.
+    velocidad_objetivo = min(V_CRUCERO, velocidad_limite_fin(d_restante, A_APROXIMACION, V_LLEGADA))
     
     # Si la atenuación está muy activa (mucho roll), forzamos una reducción de la velocidad objetivo
     # como un sistema de control de estabilidad activo (ESC) para devolver tracción al asfalto.
@@ -125,88 +137,102 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
     else:
         brake = np.clip(-kp_vel * error_vel * 0.5, 0.0, 1.0)
 
-    # Verificar si hemos llegado al final de la ruta
+    # Verificar si hemos llegado al final de la ruta: frenar a fondo cuando la distancia de parada
+    # alcanza a la que queda (o si ya se pasó). Se mide a lo largo de la ruta, así que funciona
+    # aunque el camión llegue desviado lateralmente (antes exigía estar a < 2 m del último punto).
     finished = False
-    if closest_idx == len(ruta) - 1 and min_dist < 2.0:
+    if debe_frenar(d_restante, velocidad, A_FRENADO, MARGEN_PARADA):
         finished = True
-        return 0.0, 0.0, 1.0, closest_idx, finished, error_lateral, yaw_error
+        return steering, 0.0, 1.0, closest_idx, finished, error_lateral, yaw_error
 
     return steering, throttle, brake, closest_idx, finished, error_lateral, yaw_error
 
 def main():
     direction = 'fwd'
     truck_trailer, orig = bng_open.main(direction)
-
-    # Posición de origen para el vehículo
-
-    truck_trailer.bng.control.pause()
-    truck_trailer.bng.settings.set_deterministic(60)
-
-    truck_trailer.bng.control.resume()
+    truck_trailer.iniciar_simulacion()
 
     current_idx = 0
     route_points = truck_trailer.route
+    nombre_ruta = truck_trailer.nombre_ruta
 
-    # Variables de estado inicial para el control yaw/roll dinámico
+    # Telemetría (entrada de evaluacion_resultados.py): una fila por paso de simulación
+    inicializar_telemetria(f"telemetria_forward_{nombre_ruta}.csv", puntos_ruta=route_points, sentido=+1,
+                           punto_control='tractor', algoritmo='forward', ruta=nombre_ruta,
+                           tipo_ruta=tt.TIPO_RUTA, modo='sincrono' if tt.MODO_SINCRONO else 'libre',
+                           frecuencia_simulacion=tt.FRECUENCIA_SIMULACION,
+                           frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
+                           if tt.MODO_SINCRONO else None)
+
+    # Estado del lazo
     previous_truck_roll = 0.0
-    last_time = time.time()
+    t0 = None                 # t = 0 en la primera muestra
+    t_ultimo_control = None
+    steering, throttle, brake = 0.0, 0.0, 0.0
+    error_lateral = yaw_error = None
+    finished = False
+    resultado, info_fin = 'completada', {}
+    ciclo = 0
 
-    # Telemetría CSV (entrada de evaluacion_resultados.py)
-    inicializar_telemetria("telemetria_forward_recta.csv")
-
-    # t = 0 en el primer tick del bucle de control. Antes estaba al inicio de main(),
-    # es decir, ANTES de abrir BeamNG (decenas de segundos), lo que desplazaba toda
-    # la curva de forward en las gráficas comparativas.
-    start_time_log = time.time()
-
-    while(True):
-        sensores = truck_trailer.read_sensors()
-
-        current_time = time.time()
-        dt = current_time - last_time
-        if dt < 1e-4: 
-            dt = 1e-4
+    while True:
+        # En modo síncrono el control se recalcula cada `decimacion_control` pasos y la telemetría se
+        # registra en todos; en modo libre ambos ocurren en cada iteración.
+        es_ciclo_control = (ciclo % truck_trailer.decimacion_control == 0)
+        sensores = truck_trailer.read_sensors(completo=es_ciclo_control)
+        t = sensores['t_sim']
+        if t0 is None:
+            t0 = t
+        t_rel = t - t0
 
         pos_camion = sensores["truck_pos"]
         yaw_camion = sensores["psi_truck"]
         v1 = sensores["v1"]
         truck_roll = sensores["truck_roll"]
 
-        # Leemos delta_F2 (articulación) aunque estemos yendo hacia adelante, solo para la gráfica
-        delta_F2 = sensores.get("delta_F2", 0.0)
+        if es_ciclo_control:
+            dt = (t - t_ultimo_control) if t_ultimo_control is not None else (truck_trailer.dt_control or 0.1)
+            dt = max(dt, 1e-4)
+            t_ultimo_control = t
 
-        # Calcular la rotación/inercia de balanceo (tasa de roll)
-        truck_roll_rate = (truck_roll - previous_truck_roll) / dt
-        previous_truck_roll = truck_roll
-        last_time = current_time
+            # Calcular la rotación/inercia de balanceo (tasa de roll)
+            truck_roll_rate = (truck_roll - previous_truck_roll) / dt
+            previous_truck_roll = truck_roll
 
-        # Calcula el control proporcional simple para continuar por la ruta generada
-        # Utiliza la nueva configuración de lookahead dinámico y control amortiguado (Active Yaw)
-        steering, throttle, brake, current_idx, finished, error_lateral, yaw_error = control_proporcional(
-            pos_camion, yaw_camion, truck_roll, truck_roll_rate, v1, route_points, current_idx
-        )
-
-        # Aplicar el comando al vehículo en el simulador
-        truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0)
-
-        t_sim = current_time - start_time_log
-        # En el tick de fin de ruta el controlador devuelve un comando de frenado (steering=0),
-        # no una muestra de seguimiento: se omite para no meter un salto artificial en S_smooth.
-        if not finished:
-            registrar_estado(
-                t_sim,
-                pos_camion[0], pos_camion[1],
-                route_points[current_idx][0], route_points[current_idx][1],
-                error_lateral, yaw_error, delta_F2, steering
+            # Control proporcional (Pure Pursuit) con lookahead dinámico y control amortiguado (Active Yaw)
+            steering, throttle, brake, current_idx, finished, error_lateral, yaw_error = control_proporcional(
+                pos_camion, yaw_camion, truck_roll, truck_roll_rate, v1, route_points, current_idx
             )
+            # Aplicar el comando al vehículo en el simulador (se mantiene hasta la próxima actualización)
+            truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0)
 
-        # Si llegamos al final de la trayectoria, detenemos el control autónomo
+        # Telemetría: el tick de fin de ruta es un comando de frenado, no una muestra de seguimiento
+        if not finished:
+            registrar_muestra(t_rel, sensores, steering, control_actualizado=es_ciclo_control,
+                              error_lateral_ctrl=error_lateral, error_angular_ctrl=yaw_error)
+
         if finished:
-            print("Ruta completada. Frenando y devolviendo control manual...")
-            # Se resetean los controles para dejar al usuario al mando
-            truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=0)
+            print("Fin de ruta: frenando hasta detener el camión...")
+            # Frena hasta detenerse y deja el camión con freno de mano, sin freno de servicio y en
+            # neutro (con el freno de servicio aplicado y el camión detenido, la caja automática
+            # de BeamNG engrana la reversa y el camión arranca hacia atrás).
+            sobrepaso, d_fin = detener_en_fin(truck_trailer, route_points, current_idx, 'truck_pos',
+                                              steering=steering, is_reverse=False)
+            print(f"Camión detenido. Sobrepaso a lo largo de la ruta: {sobrepaso:+.2f} m "
+                  f"(+ = se pasó del punto final) | distancia al punto final: {d_fin:.2f} m")
+            resultado, info_fin = 'completada', dict(sobrepaso_m=sobrepaso, distancia_final_m=d_fin)
             break
-        
+        if t_rel > tt.DURACION_MAXIMA_S:
+            print(f"Tiempo máximo del experimento ({tt.DURACION_MAXIMA_S:.0f} s) alcanzado: deteniendo...")
+            sobrepaso, d_fin = detener_en_fin(truck_trailer, route_points, current_idx, 'truck_pos',
+                                              steering=steering, is_reverse=False)
+            resultado, info_fin = 'tiempo_maximo', dict(sobrepaso_m=sobrepaso, distancia_final_m=d_fin)
+            break
+
+        truck_trailer.avanzar()      # modo síncrono: un paso de simulación (1/60 s); modo libre: nada
+        ciclo += 1
+
+    finalizar_telemetria(resultado, **info_fin)
+    truck_trailer.liberar_simulacion()
     generar_grafico_evaluacion(titulo='Evaluación Controlador Proporcional (Marcha Adelante)')
     input('Presione enter cuando termine la simulación...')
 

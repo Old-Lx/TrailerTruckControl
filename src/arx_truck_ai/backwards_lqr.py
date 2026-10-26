@@ -4,131 +4,129 @@ from beamngpy import Vehicle
 import numpy as np
 import scipy.linalg as la
 import time
-from arx_truck_ai.debugging_sys import registrar_estado, generar_grafico_evaluacion, inicializar_telemetria
+from arx_truck_ai.debugging_sys import (registrar_muestra, generar_grafico_evaluacion, inicializar_telemetria,
+                                       finalizar_telemetria)
+from arx_truck_ai import truck_trailer as tt
+from arx_truck_ai.fin_ruta import (distancia_restante, velocidad_limite_fin, debe_frenar,
+                                   indice_segmento, detener_en_fin)
+
+# ---------------------------------------------------------------------------
+# Fin de ruta (ver fin_ruta.py). El punto que debe detenerse en el final es trailer_pos.
+V_CRUCERO = 2.0          # m/s   velocidad de crucero en reversa
+A_APROXIMACION = 0.3     # m/s²  desaceleración del perfil de llegada: v_obj = sqrt(2*a*d_restante)
+V_LLEGADA = 0.5          # m/s   velocidad mínima del perfil mientras quede ruta
+A_FRENADO = 1.5          # m/s²  desaceleración que se ASUME con freno a fondo (conservadora)
+MARGEN_PARADA = 0.3      # m     margen extra antes del punto final
+# ---------------------------------------------------------------------------
+
+# ----------------------------------------------------------------------------
+# MODELO DE DISEÑO DEL LQR
+#
+# Modelo FÍSICO del camión+tráiler en reversa, identificado a partir de la telemetría
+# real de BeamNG (reproduce delta_F2, e_ct y e_trailer de una corrida real con errores de
+# pocos %). Estados medidos: x1 = error lateral [m] (positivo a la izquierda de la ruta),
+# x2 = error angular del tráiler [rad], x3 = delta_F2 = psi_truck - psi_trailer [rad],
+# x4 = integral del error lateral [m*s] (integra +x1, igual que el código de control).
+# Quinto estado: x5 = posición REAL del volante (el actuador responde con retraso); no se
+# mide, se estima filtrando el propio comando anterior (previous_steering). La entrada del
+# LQR es el comando de volante normalizado s en [-1, 1] (positivo = ruedas a la derecha).
+#
+#   x1_dot = -v*x2 + v*(DP/L2)*x3
+#   x2_dot = +(v/L2)*x3                 <- el tráiler gira en sentido contrario al de la articulación
+#   x3_dot = +(v/L2)*x3 + (v*PHI/L1)*x5 <- INESTABLE en reversa (jackknife): polo en +v/L2
+#   x4_dot = +x1
+#   x5_dot = (s - x5)/TAU
+#
+# El modelo anterior (A[2,1]=+v/D0, A[2,2]=-v/D0, A[1,2]=-v/D0, B=-v) describía una planta
+# ESTABLE y con el acople x2<-x3 de signo opuesto; la K resultante tenía signo contrario
+# al necesario en e_ct y e_trailer, y aplicada a la planta real daba un lazo cerrado
+# inestable (polo en +0.44 1/s).
+#
+# Valores IDENTIFICADOS de la telemetría real: L1 = 2.93 m, L2 = 8.1 m, DP = 5.2 m, retardo del
+# volante = lag de 0.34 s + retardo puro de 0.32 s (≈ 0.66 s en total).
+# Valores de DISEÑO (deliberadamente PESIMISTAS: planta más inestable, volante menos eficaz,
+# más retraso). Diseñar sobre la planta pesimista es lo que da robustez: con los valores
+# identificados el diseño fallaba en ~3 % de plantas realistas; con estos, en ninguna.
+# ----------------------------------------------------------------------------
+L1_NOMINAL = 3.3             # m   ganancia del volante sobre la articulación: v*PHI/L1
+L2_NOMINAL = 6.5             # m   quinta rueda -> eje del tráiler (inestabilidad: v/L2)
+DP_NOMINAL = 5.2             # m   punto medido (trailer_pos) -> eje del tráiler
+PHI_MAX_RAD = 0.6            # rad ángulo de rueda a steering = 1
+TAU_VOLANTE_NOMINAL = 0.8    # s   retraso TOTAL del actuador de dirección que asume el estimador
 
 # Puntos de operación (rad) para el gain scheduling sobre |delta_F2|.
-# Deben ir de menor a mayor. Cubren desde el equilibrio hasta la zona de
-# peligro de jackknife, con resolución suficiente para que la interpolación
-# capture la variación continua de R y Q_33.
 PUNTOS_OPERACION_DELTA_F2 = (0.0, 0.15, 0.30, 0.45)
 
-# Zona de transición para la penalización continua (rad). Antes de
-# ZONA_PELIGRO_INICIO el comportamiento es el nominal "suave"; después de
-# ZONA_PELIGRO_FIN se satura en el extremo "agresivo".
-# Recalibrado: arranca antes (0.10 en vez de 0.15) para que la corrección
-# sea gradual desde más temprano y no golpee el esfuerzo de control de golpe.
+# Zona de transición para la penalización continua (rad).
 ZONA_PELIGRO_INICIO = 0.10
 ZONA_PELIGRO_FIN = 0.45
 
-# Extremos de penalización del esfuerzo de control (R) y de la articulación (Q_33)
-# Recalibrado tras observar saturación severa del volante (-2.0 a +3.5 contra
-# el límite físico [-1,1]): se reduce mucho la agresividad de ambos extremos.
-R_MAX = 1500.0    # en x3=0: comportamiento suave, igual que antes
-R_MIN = 1400.0    # con este en 1800 y R_MAX en 5000 dura 20 segundos
-Q33_BASE = 8000.0   # en x3=0: igual que antes
-Q33_MAX = 18000.0   # antes 40000 -> demasiado agresivo, saturaba el actuador
+# Penalizaciones (en unidades físicas: m, rad, m*s, steering normalizado)
+Q_X1 = 0.5                  # error lateral
+Q_X2 = 5.0                  # error angular
+Q_X4 = 0.05                 # integral del error lateral
+Q_X5 = 0.5                  # posición real del volante
+Q33_BASE = 0.5              # articulación en x3 = 0
+Q33_MAX = 0.75              # articulación en la zona de peligro
+R_MAX = 15.0                # penalización del esfuerzo de control en x3 = 0
+R_MIN = 10.5                # ... en la zona de peligro (menor = contravolante más agresivo)
+# NOTA sobre el scheduling: con el modelo físico correcto, hacerlo MÁS agresivo en la zona de
+# peligro (p. ej. R x0.1, Q33 x20) EMPEORA la robustez (con retardo, más ganancia desestabiliza):
+# en un barrido de condiciones extremas bajaba de 74 % a 60 % de corridas sin jackknife. Se
+# mantiene el mecanismo en una versión suave (R x0.7, Q33 x1.5), prácticamente neutra.
 
 
 def _factor_suavizado(x3_abs, inicio=ZONA_PELIGRO_INICIO, fin=ZONA_PELIGRO_FIN):
     """
-    Smoothstep (C1 continuo, derivada nula en los extremos) que mapea
-    |x3| -> [0, 1]: 0 por debajo de 'inicio' (zona segura), 1 por encima
-    de 'fin' (zona de peligro saturada), transición suave en el medio.
-    Evita saltos bruscos de ganancia (que un sensor ruidoso convertiría
-    en chattering) frente al antiguo umbral duro en 0.03 rad.
+    Smoothstep (C1 continuo, derivada nula en los extremos) que mapea |x3| -> [0, 1]:
+    0 por debajo de 'inicio' (zona segura), 1 por encima de 'fin' (zona de peligro).
     """
     s = np.clip((x3_abs - inicio) / (fin - inicio), 0.0, 1.0)
     return s * s * (3 - 2 * s)
 
 
 def _R_lqr_continuo(x3_op):
-    """
-    R decrece suave y progresivamente de R_MAX a R_MIN a medida que |x3_op|
-    se acerca/entra en la zona de peligro: menos penalización del esfuerzo
-    de control => contravolante más agresivo disponible para recuperar el
-    jackknife.
-    """
+    """R decrece suave de R_MAX a R_MIN al entrar en la zona de peligro."""
     s = _factor_suavizado(abs(x3_op))
     return R_MAX * (1 - s) + R_MIN * s
 
 
 def _Q33_continuo(x3_op):
-    """
-    Q_33 (penalización de la articulación) crece de forma EXPONENCIAL entre
-    Q33_BASE y Q33_MAX según el mismo factor de suavizado que R, para que el
-    LQR castigue cada vez más fuerte cualquier desviación de x3 a medida que
-    se acerca a la zona de peligro.
-    """
+    """Q_33 crece de forma exponencial entre Q33_BASE y Q33_MAX con el mismo factor."""
     s = _factor_suavizado(abs(x3_op))
     return Q33_BASE * (Q33_MAX / Q33_BASE) ** s
 
 
-def _construir_A_bwd(v_eff, D0):
-    """
-    Matriz de estado en retroceso — forma CALIBRADA PARA BEAMNG.DRIVE
-    (confirmada intencional, distinta de la forma pura de modelaje.m).
-
-    A diferencia del modelo nominal de modelaje.m (A[2,1]=0, A[2,2]=+V0/D0),
-    aquí se usa A[2,1]=+v_eff/D0 y A[2,2]=-v_eff/D0: el término extra y el
-    cambio de signo compensan convenciones de coordenadas y dinámicas del
-    motor de físicas de BeamNG que no están representadas en el modelo
-    analítico puro. Esta es la forma que debe usarse para el controlador
-    en ejecución; modelaje.m sigue siendo la referencia de diseño/análisis
-    (Bode, loop shaping, robustez), no la forma exacta de simulación.
-    """
-    return np.array([
-        [0,      -v_eff,        0        ],
-        [0,       0,        -v_eff/D0    ],
-        [0,   v_eff/D0,      -v_eff/D0    ]
-    ])
+def _construir_modelo(v_eff, L2, L1=None, dp=None, tau=None):
+    """Matrices (A, B) del modelo de diseño de 5 estados [x1, x2, x3, x4, x5] (ver arriba)."""
+    L1 = L1_NOMINAL if L1 is None else L1
+    dp = DP_NOMINAL if dp is None else dp
+    tau = TAU_VOLANTE_NOMINAL if tau is None else tau
+    A = np.zeros((5, 5))
+    A[0, 1] = -v_eff
+    A[0, 2] = v_eff * dp / L2
+    A[1, 2] = v_eff / L2
+    A[2, 2] = v_eff / L2
+    A[2, 4] = v_eff * PHI_MAX_RAD / L1
+    A[3, 0] = 1.0
+    A[4, 4] = -1.0 / tau
+    B = np.zeros((5, 1))
+    B[4, 0] = 1.0 / tau
+    return A, B
 
 
 def calcular_K_punto_operacion(V0, D0, x3_op):
     """
-    Resuelve la LQR (CARE) para un único punto de operación x3_op y devuelve
-    la ganancia aumentada K_aug (1x4). No hay observador: se asume
-    instrumentación completa de los 4 estados (medición directa).
-
-    A_bwd/B_bwd no dependen de x3_op (calibración BeamNG fija). La variación
-    entre puntos de operación viene de R_lqr y Q_33, ahora funciones
-    CONTINUAS de |x3_op| (ver _R_lqr_continuo / _Q33_continuo) en vez del
-    salto binario anterior: R baja suavemente y Q_33 sube exponencialmente
-    a medida que la articulación se acerca a la zona de peligro de
-    jackknife.
+    Resuelve la LQR (CARE) para un punto de operación x3_op y devuelve K (1x5):
+        steering = -K @ [x1, x2, x3, x4, x5]
+    D0 es la longitud del tráiler L2 [m] (antes era un parámetro calibrado a mano).
     """
     v_eff = V0 if abs(V0) > 0.1 else 0.1
-
-    A_bwd = _construir_A_bwd(v_eff, D0)
-
-    B_bwd = np.array([
-        [0],
-        [0],
-        [-v_eff]
-    ])
-
-    C = np.array([[1, 0, 0]])
-
-    # Modelo aumentado con estado extra de error integral
-    A_aug = np.zeros((4, 4))
-    A_aug[0:3, 0:3] = A_bwd
-    A_aug[3, 0:3] = -C
-
-    B_aug = np.zeros((4, 1))
-    B_aug[0:3, :] = B_bwd
-
-    Q_lqr = np.diag([
-        5000,                    # error lateral
-        4000,                    # error angular (antes 100 -- demasiado bajo para un sistema inestable)
-        _Q33_continuo(x3_op),    # articulación (crece exponencialmente cerca del jackknife)
-        100                      # integrador
-    ])
-
+    A, B = _construir_modelo(v_eff, D0)
+    Q_lqr = np.diag([Q_X1, Q_X2, _Q33_continuo(x3_op), Q_X4, Q_X5])
     R_lqr = np.array([[_R_lqr_continuo(x3_op)]])
-
-    X_lqr = la.solve_continuous_are(A_aug, B_aug, Q_lqr, R_lqr)
-    K_aug = np.linalg.inv(R_lqr) @ B_aug.T @ X_lqr
-
-    return K_aug
+    X_lqr = la.solve_continuous_are(A, B, Q_lqr, R_lqr)
+    return np.linalg.inv(R_lqr) @ B.T @ X_lqr
 
 
 def precalcular_ganancias_lqr(V0_nominal, D0_nominal,
@@ -219,14 +217,19 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
             min_dist = dist
             closest_idx = i
 
-    # Si estamos en el tramo final
-    if closest_idx >= len(ruta) - 2 and min_dist < 2.0:
-        return 0.0, 0.0, 1.0, closest_idx, True, integrador_error, x_hat, 0.0, 0.0, 0.0, 0.0
+    # Distancia que falta hasta el final, medida A LO LARGO de la ruta (negativa si ya se pasó).
+    # El fin de ruta se decide al final de la función (ver debe_frenar), no aquí: antes se exigía
+    # que el tráiler estuviera a < 2 m del último punto, y si llegaba desviado nunca se cumplía.
+    d_restante = distancia_restante(ruta, closest_idx, pos_trailer)
     
     # B. Error lateral (x1 o "cross track error") 
-    # Proyección ortogonal directa de la distancia entre el tráiler y el segmento de la ruta para evitar zonas muertas angulares
-    pt_actual_tr = ruta[closest_idx]
-    pt_siguiente_tr = ruta[min(closest_idx + 1, len(ruta) - 1)]
+    # Proyección ortogonal directa de la distancia entre el tráiler y el segmento de la ruta para evitar zonas muertas angulares.
+    # En el último punto se usa el último segmento: con el punto final repetido, el segmento tenía
+    # longitud 0 y atan2(0, 0) = 0 daba un rumbo de referencia falso (el error angular x2 saltaba al
+    # rumbo absoluto del tráiler en rutas curvas y el LQR terminaba en jackknife).
+    idx_seg = indice_segmento(ruta, closest_idx)
+    pt_actual_tr = ruta[idx_seg]
+    pt_siguiente_tr = ruta[idx_seg + 1]
     dx_path = pt_siguiente_tr[0] - pt_actual_tr[0]
     dy_path = pt_siguiente_tr[1] - pt_actual_tr[1]
     yaw_path = math.atan2(dy_path, dx_path)
@@ -257,9 +260,10 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     # Limitamos la cuerda del integrador para evitar Wind-up catastrófico
     integrador_error = np.clip(integrador_error, -0.15, 0.15)
 
-    # Instrumentación completa: los 4 estados se miden/estiman directamente
-    # (no hay observador). La ganancia sale de interpolar la tabla precalculada
-    # (sin resolver Riccati aquí) según el ángulo de articulación actual.
+    # x1..x4 se miden directamente. El 5.º estado (posición REAL del volante, que va
+    # retrasada respecto al comando) se estima filtrando el comando anterior con la
+    # constante de tiempo del actuador: es un modelo de la planta, no un observador de
+    # estados. La ganancia sale de interpolar la tabla precalculada (sin Riccati aquí).
     K_mimo = interpolar_ganancia_lqr(x3_delta_F2, tabla_ganancias)
 
     # Inyección directa de las lecturas físicas de los sensores de orientación y articulación
@@ -274,14 +278,15 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     x_hat[1,0] = x2_error_angular
     x_hat[2,0] = x3_delta_F2
     x_hat[3,0] = integrador_error
+    # Estimación de x5: discretización exacta del retardo de primer orden con comando constante
+    # (previous_steering) durante el último intervalo dt.
+    alfa_volante = 1.0 - math.exp(-max(dt, 1e-4) / TAU_VOLANTE_NOMINAL)
+    x_hat[4,0] += alfa_volante * (previous_steering - x_hat[4,0])
     
     # 5. Ganancias MIMO y Ejecución LQR
-    # Cálculo formal óptimo: u = -K * x 
-    u_lqr = - float((K_mimo @ x_hat).item()) # Hay que adecuar el valor dentro de los límites (.item(): compatible con NumPy>=2.4)
-
-    # Amortiguamiento activo de la articulación — frena el crecimiento de x3
-    max_ruedas_rad = 0.6
-    steering_raw = -(u_lqr / max_ruedas_rad)
+    # Cálculo formal óptimo: u = -K * x, con u = comando de volante normalizado [-1, 1]
+    # (.item(): compatible con NumPy>=2.4)
+    steering_raw = - float((K_mimo @ x_hat).item())
     
     # PREVENCIÓN EXTRA: Sistema de Suspensión Dinámica (8-DOF Active Control Anti-Roll)
     limite_roll = 0.08
@@ -299,8 +304,9 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
 
     steering = np.clip(steering_raw, -1.0, 1.0)
     
-    # Bucle de velocidad básico
-    velocidad_objetivo = 2.0 * atenuacion_dinamica
+    # Bucle de velocidad básico, con perfil de llegada: cerca del final la velocidad objetivo baja
+    # como sqrt(2*a*d_restante) para llegar despacio al punto final.
+    velocidad_objetivo = min(V_CRUCERO, velocidad_limite_fin(d_restante, A_APROXIMACION, V_LLEGADA)) * atenuacion_dinamica
     error_vel = velocidad_objetivo - velocidad
     kp_vel = 0.4
     if error_vel > 0:
@@ -310,6 +316,10 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
         throttle = 0.0
         brake = np.clip(-kp_vel * error_vel * 0.5, 0.0, 1.0)
 
+    # Fin de ruta: frenar a fondo cuando la distancia de parada alcanza a la que queda (o si ya se pasó).
+    if debe_frenar(d_restante, velocidad, A_FRENADO, MARGEN_PARADA):
+        return steering, 0.0, 1.0, closest_idx, True, integrador_error, x_hat, x1_error_lateral, x2_error_angular, x3_delta_F2, steering_raw
+
     return steering, throttle, brake, closest_idx, False, integrador_error, x_hat, x1_error_lateral, x2_error_angular, x3_delta_F2, steering_raw
 
 
@@ -317,55 +327,61 @@ def main():
     direction = 'bwd'
     truck_trailer, orig = bng_open.main(direction)
 
-    truck_trailer.bng.control.pause()
-    truck_trailer.bng.settings.set_deterministic(60)
-
     # Al poner la caja de cambios del camión en Reversa (Gear = -1), el acelerador lo desplazará hacia atrás
-    truck_trailer.truck.control(gear=-1)
-    truck_trailer.bng.control.resume()
+    truck_trailer.iniciar_simulacion(gear=-1)
 
     current_idx = 0
     route_points = truck_trailer.route
+    nombre_ruta = truck_trailer.nombre_ruta
 
-    # Inicialización de estado para LQR (Observador, Integrador y Derivadas)
-    last_time = time.time()
+    # Inicialización de estado para LQR (Integrador, estimación del volante y Derivadas)
     previous_delta_F2 = 0.0
     previous_trailer_roll = 0.0
     previous_steering = 0.0
     
-    # Estructura del Estado Estimado (Error lateral, Error angular, Articulación, Error Integral)
-    x_hat = np.zeros((4, 1))
+    # Estructura del estado (Error lateral, Error angular, Articulación, Error Integral,
+    # Posición estimada del volante)
+    x_hat = np.zeros((5, 1))
     integrador_error = 0.0
 
     delta_F2_rate_filtrada = 0.0
     alpha_rate = 0.3  # 0=sin filtro, 1=completamente suavizado
 
-    # ── Diagnóstico de D0 ──────────────────────────────────────────────────────
-    # En la primera lectura de sensores, imprimir delta_F2 inicial y velocidad
-    # para confirmar que el sensor de articulación funciona correctamente.
-    # Si tienes acceso a pos_hitch o pos_cabina, calcular D0_real aquí.
-    # Probar D0 = 3.0, 4.0, 5.0, 6.0, 7.0 cambiando este valor.
-    D0_NOMINAL = 3.0  # ← cambiar este valor entre pruebas para calibrar D0
-    # ──────────────────────────────────────────────────────────────────────────
+    # D0_NOMINAL es la longitud del tráiler L2 del modelo de diseño (L2_NOMINAL).
+    D0_NOMINAL = L2_NOMINAL
 
-    # Velocidad de DISEÑO (no la instantánea): coincide con el V0=2.0 de
-    # modelaje.m y con velocidad_objetivo del lazo de velocidad más abajo.
-    # Las K se precalculan aquí, UNA sola vez, antes de entrar al bucle a 60Hz.
+    # Velocidad de DISEÑO (no la instantánea), igual a velocidad_objetivo del lazo de velocidad.
+    # Las K se precalculan aquí, UNA sola vez, antes de entrar al bucle de control.
     V0_NOMINAL = 2.0
     tabla_ganancias = precalcular_ganancias_lqr(V0_NOMINAL, D0_NOMINAL)
 
     primer_tick = True
 
-    # Telemetría CSV (entrada de evaluacion_resultados.py)
-    inicializar_telemetria("telemetria_lqr_recta.csv")
+    # Telemetría (entrada de evaluacion_resultados.py): una fila por paso de simulación
+    inicializar_telemetria(f"telemetria_lqr_{nombre_ruta}.csv", puntos_ruta=route_points, sentido=-1,
+                           punto_control='trailer', algoritmo='lqr', ruta=nombre_ruta,
+                           tipo_ruta=tt.TIPO_RUTA, modo='sincrono' if tt.MODO_SINCRONO else 'libre',
+                           frecuencia_simulacion=tt.FRECUENCIA_SIMULACION,
+                           frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
+                           if tt.MODO_SINCRONO else None)
 
-    start_time_log = time.time()
+    t0 = None
+    t_ultimo_control = None
+    steering, throttle, brake = 0.0, 0.0, 0.0
+    x1 = x2 = None
+    finished = False
+    resultado, info_fin = 'completada', {}
+    ciclo = 0
 
-    while(True):
-        sensores = truck_trailer.read_sensors(is_reverse=True)
-        current_time = time.time()
-        dt = current_time - last_time
-        if dt < 1e-4: dt = 1e-4 
+    while True:
+        # En modo síncrono el control se recalcula cada `decimacion_control` pasos y la telemetría se
+        # registra en todos; en modo libre ambos ocurren en cada iteración.
+        es_ciclo_control = (ciclo % truck_trailer.decimacion_control == 0)
+        sensores = truck_trailer.read_sensors(is_reverse=True, completo=es_ciclo_control)
+        t = sensores['t_sim']
+        if t0 is None:
+            t0 = t
+        t_rel = t - t0
 
         velocidad = sensores["v1"]
         psi_trailer = sensores["psi_trailer"]
@@ -378,53 +394,62 @@ def main():
             print(f"[D0-DIAG] pos_trailer={pos_trailer}")
             primer_tick = False
 
-        # Tasas de cambio (no se integran directo en LQR A/B, pero se guardan por seguridad de atenuación dinámica de masas y roll mode)
-        delta_F2_rate_cruda = (delta_F2 - previous_delta_F2) / dt
-        delta_F2_rate_filtrada = alpha_rate * delta_F2_rate_filtrada + (1 - alpha_rate) * delta_F2_rate_cruda
-        trailer_roll_rate = (trailer_roll - previous_trailer_roll) / dt
-        
-        previous_delta_F2 = delta_F2
-        previous_trailer_roll = trailer_roll
-        last_time = current_time
+        if es_ciclo_control:
+            dt = (t - t_ultimo_control) if t_ultimo_control is not None else (truck_trailer.dt_control or 0.1)
+            dt = max(dt, 1e-4)
+            t_ultimo_control = t
 
-        # Control Estado LQR (MIMO, Gain Scheduled, sin observador)
-        steering, throttle, brake, current_idx, finished, integrador_error, x_hat, x1, x2, x3, s_raw = control_lqr_reversa(
-        pos_trailer, psi_trailer, delta_F2, delta_F2_rate_filtrada, trailer_roll, trailer_roll_rate, 
-        velocidad, route_points, current_idx, dt, integrador_error, x_hat, previous_steering=previous_steering,
-        min_lookahead=2.0, max_lookahead=8.0, k_lookahead_gain=1.0, tabla_ganancias=tabla_ganancias
-    )
+            # Tasas de cambio (no se integran en A/B; se usan en la atenuación dinámica de roll)
+            delta_F2_rate_cruda = (delta_F2 - previous_delta_F2) / dt
+            delta_F2_rate_filtrada = alpha_rate * delta_F2_rate_filtrada + (1 - alpha_rate) * delta_F2_rate_cruda
+            trailer_roll_rate = (trailer_roll - previous_trailer_roll) / dt
+            previous_delta_F2 = delta_F2
+            previous_trailer_roll = trailer_roll
 
-        truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)
-        
-        # Calcular tiempo relativo y guardar estado
-        t_sim = current_time - start_time_log
-        # Se omite el tick de fin de ruta: ahí el controlador devuelve un frenado (steering=0)
-        # con errores en cero de relleno, no una muestra real de seguimiento.
-        # Se registra `steering` (comando aplicado, ya saturado a [-1,1]) y no `s_raw`, para que
-        # la columna sea comparable con forward/backward y con S_smooth. Si quieres seguir
-        # diagnosticando la saturación del LQR, pasa s_raw aquí temporalmente.
-        if not finished:
-            registrar_estado(
-                t_sim,
-                pos_trailer[0], pos_trailer[1],
-                route_points[current_idx][0], route_points[current_idx][1],
-                x1, x2, delta_F2, steering
+            # Control Estado LQR (MIMO, Gain Scheduled)
+            steering, throttle, brake, current_idx, finished, integrador_error, x_hat, x1, x2, x3, s_raw = control_lqr_reversa(
+                pos_trailer, psi_trailer, delta_F2, delta_F2_rate_filtrada, trailer_roll, trailer_roll_rate,
+                velocidad, route_points, current_idx, dt, integrador_error, x_hat, previous_steering=previous_steering,
+                min_lookahead=2.0, max_lookahead=8.0, k_lookahead_gain=1.0, tabla_ganancias=tabla_ganancias
             )
+            truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)
+            previous_steering = steering
 
-        previous_steering = steering
+        # Telemetría: se registra `steering` (comando aplicado, saturado a [-1, 1]); el tick de fin de
+        # ruta es un comando de frenado, no una muestra de seguimiento.
+        if not finished:
+            registrar_muestra(t_rel, sensores, steering, control_actualizado=es_ciclo_control,
+                              error_lateral_ctrl=x1, error_angular_ctrl=x2)
 
         if finished:
-            print("Ruta de reversa LQR completada. Frenando...")
-            truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=0, gear=0)
+            print("Fin de ruta (LQR): frenando hasta detener el conjunto...")
+            # Frena hasta detenerse y deja el camión con freno de mano, sin freno de servicio y en neutro.
+            sobrepaso, d_fin = detener_en_fin(truck_trailer, route_points, current_idx, 'trailer_pos',
+                                              steering=steering, is_reverse=True, gear=-1)
+            print(f"Conjunto detenido. Sobrepaso del tráiler a lo largo de la ruta: {sobrepaso:+.2f} m "
+                  f"(+ = se pasó del punto final) | distancia al punto final: {d_fin:.2f} m")
+            resultado, info_fin = 'completada', dict(sobrepaso_m=sobrepaso, distancia_final_m=d_fin)
             break
         elif abs(delta_F2) > 1.0: # Condición de Jackknife (aprox 57 grados)
             print(f"¡Jackknife inminente detectado! (Articulación: {delta_F2:.2f} rad). Abortando para graficar...")
             truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=0, gear=0)
+            resultado, info_fin = 'jackknife', dict(delta_F2_final_rad=float(delta_F2))
+            break
+        elif t_rel > tt.DURACION_MAXIMA_S:
+            print(f"Tiempo máximo del experimento ({tt.DURACION_MAXIMA_S:.0f} s) alcanzado: deteniendo...")
+            sobrepaso, d_fin = detener_en_fin(truck_trailer, route_points, current_idx, 'trailer_pos',
+                                              steering=steering, is_reverse=True, gear=-1)
+            resultado, info_fin = 'tiempo_maximo', dict(sobrepaso_m=sobrepaso, distancia_final_m=d_fin)
             break
 
+        truck_trailer.avanzar()      # modo síncrono: un paso de simulación (1/60 s); modo libre: nada
+        ciclo += 1
+
+    finalizar_telemetria(resultado, **info_fin)
+    truck_trailer.liberar_simulacion()
     # Cuando salimos del bucle, graficamos
     generar_grafico_evaluacion()
     input('Presione enter cuando termine la simulación en reversa (MIMO-LQR)...')
 
 if __name__ == "__main__":
-    main()
+    main()

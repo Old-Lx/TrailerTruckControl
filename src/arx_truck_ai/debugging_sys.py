@@ -1,8 +1,11 @@
 import csv
+import json
 import logging
+import math
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import time
 
 # ==========================================
 # MÓDULO DE DEBUGGING Y EVALUACIÓN
@@ -29,32 +32,199 @@ historial = {
 # ------------------------------------------------------------------
 # Exportación a CSV (entrada de evaluacion_resultados.py, Capítulo 5)
 # ------------------------------------------------------------------
-# Nombre del CSV activo. Lo fija inicializar_telemetria(); mientras sea None,
-# registrar_estado() solo escribe en memoria y en el .log.
-archivo_csv_activo = None
-
-# Cabecera EXACTA que espera el script de evaluación.
+# Por cada corrida se escriben, en la carpeta de trabajo:
+#   telemetria_<algoritmo>_<ruta>.csv   una fila por paso de simulación (60 Hz en modo síncrono)
+#   telemetria_<algoritmo>_<ruta>.json  metadatos: algoritmo, ruta, modo, resultado, sobrepaso final...
+#   ruta_<ruta>.csv                     la ruta de referencia completa (x, y)
+#
+# Las 9 primeras columnas son las de siempre (compatibilidad). Los errores de seguimiento se calculan
+# AQUÍ con una única definición geométrica para los tres algoritmos (no dependen de cada controlador):
+#   error_lateral  distancia con signo (+ = izquierda del sentido de la ruta) del PUNTO DE CONTROL a la
+#                  ruta: el tractor en marcha adelante, el remolque en reversa.
+#   error_angular  error angular del REMOLQUE: tangente de la ruta en el punto más cercano al remolque
+#                  menos el rumbo de avance del remolque (su nariz en marcha adelante, su cola en reversa).
 CSV_CABECERA = ['t', 'x_real', 'y_real', 'x_ref', 'y_ref',
-                'error_lateral', 'error_angular', 'delta_F2', 'steering']
+                'error_lateral', 'error_angular', 'delta_F2', 'steering',
+                'x_tractor', 'y_tractor', 'x_trailer', 'y_trailer', 'psi_tractor', 'psi_trailer', 'velocidad',
+                'error_lateral_tractor', 'error_lateral_trailer',
+                'error_lateral_ctrl', 'error_angular_ctrl', 'control_actualizado']
 
-_aviso_sin_csv_emitido = False  # avisar UNA vez, no en cada tick
+archivo_csv_activo = None
+_aviso_sin_csv_emitido = False
+_sesion = {}          # estado de la corrida activa (ruta, sentido, metadatos, contadores)
 
-def inicializar_telemetria(nombre_archivo):
+
+def _envolver(a):
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+class SeguidorRuta:
+    """Proyección de un punto sobre la ruta (polilínea) con búsqueda local incremental.
+
+    proyectar(P) -> (error_lateral, rumbo_tangente, pie): distancia con signo (+ = izquierda del
+    sentido de la ruta), rumbo de la tangente del segmento más cercano y punto pie de la proyección.
+    El primer y el último segmento se prolongan (puntos antes del inicio o después del final).
     """
-    Crea (o sobrescribe) el CSV `nombre_archivo` con la cabecera estándar y lo
-    deja como archivo activo para registrar_estado(). Llamar UNA vez por
-    experimento, antes del bucle de control.
+
+    def __init__(self, ruta, ventana_atras=10, ventana_adelante=80):
+        r = np.asarray(ruta, dtype=np.float64)[:, :2]
+        d = np.diff(r, axis=0)
+        largo = np.hypot(d[:, 0], d[:, 1])
+        validos = largo > 1e-9
+        self.a = r[:-1][validos]
+        self.d = d[validos] / largo[validos, None]
+        self.largo = largo[validos]
+        self.rumbo = np.arctan2(self.d[:, 1], self.d[:, 0])
+        self.idx = None
+        self.atras, self.adelante = ventana_atras, ventana_adelante
+
+    def proyectar(self, P):
+        P = np.asarray(P, dtype=np.float64)[:2]
+        n = len(self.a)
+        if self.idx is None:
+            lo, hi = 0, n
+        else:
+            lo, hi = max(0, self.idx - self.atras), min(n, self.idx + self.adelante)
+        a, d, L = self.a[lo:hi], self.d[lo:hi], self.largo[lo:hi]
+        w = P - a
+        t = w[:, 0] * d[:, 0] + w[:, 1] * d[:, 1]
+        t_lim = np.clip(t, 0.0, L)
+        if lo == 0:
+            t_lim[0] = min(t[0], L[0])                 # antes del inicio: prolongación del primer segmento
+        if hi == n:
+            t_lim[-1] = max(t[-1], 0.0)                # después del final: prolongación del último
+        pie = a + d * t_lim[:, None]
+        dist = np.hypot(P[0] - pie[:, 0], P[1] - pie[:, 1])
+        k = int(np.argmin(dist))
+        self.idx = lo + k
+        lat = d[k, 0] * (P[1] - a[k, 1]) - d[k, 1] * (P[0] - a[k, 0])
+        return float(lat), float(self.rumbo[self.idx]), pie[k]
+
+
+def _escribir_ruta(nombre_archivo_ruta, ruta):
+    with open(nombre_archivo_ruta, 'w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f, lineterminator='\n')
+        w.writerow(['x', 'y'])
+        for p in ruta:
+            w.writerow([float(p[0]), float(p[1])])
+
+
+def inicializar_telemetria(nombre_archivo, puntos_ruta=None, sentido=+1, punto_control='tractor', **metadatos):
     """
-    global archivo_csv_activo, _aviso_sin_csv_emitido
+    Crea (o sobrescribe) el CSV de la corrida con la cabecera estándar y lo deja activo.
+    Llamar UNA vez por experimento, antes del bucle de control.
+
+    puntos_ruta:    lista de puntos de la ruta (habilita los errores geométricos y escribe ruta_<nombre>.csv)
+    sentido:        +1 marcha adelante, -1 reversa (define el rumbo de avance del remolque)
+    punto_control:  'tractor' o 'trailer': qué punto se reporta en x_real/y_real/error_lateral
+    metadatos:      se guardan en el .json de la corrida (algoritmo, ruta, modo, ...)
+    """
+    global archivo_csv_activo, _aviso_sin_csv_emitido, _sesion
     archivo_csv_activo = nombre_archivo
     _aviso_sin_csv_emitido = False
+    for k in historial:
+        historial[k].clear()
     with open(archivo_csv_activo, 'w', newline='', encoding='utf-8') as f:
         csv.writer(f, lineterminator='\n').writerow(CSV_CABECERA)
 
+    _sesion = dict(sentido=1 if sentido >= 0 else -1, punto_control=punto_control,
+                   metadatos=dict(metadatos), n=0, t_ini=None, t_fin=None,
+                   seg_tractor=None, seg_trailer=None)
+    if puntos_ruta is not None and len(puntos_ruta) > 1:
+        _sesion['seg_tractor'] = SeguidorRuta(puntos_ruta)
+        _sesion['seg_trailer'] = SeguidorRuta(puntos_ruta)
+        nombre_ruta = metadatos.get('ruta')
+        if nombre_ruta:
+            carpeta = os.path.dirname(os.path.abspath(nombre_archivo))
+            archivo_ruta = os.path.join(carpeta, f"ruta_{nombre_ruta}.csv")
+            _escribir_ruta(archivo_ruta, puntos_ruta)
+            _sesion['metadatos']['archivo_ruta'] = os.path.basename(archivo_ruta)
+
+
+def _fila_csv(fila):
+    with open(archivo_csv_activo, 'a', newline='', encoding='utf-8') as f:
+        csv.writer(f, lineterminator='\n').writerow(['' if v is None else v for v in fila])
+
+
+def registrar_muestra(t, sensores, steering, control_actualizado=True,
+                      error_lateral_ctrl=None, error_angular_ctrl=None):
+    """
+    Registra UNA muestra a partir del diccionario de read_sensors() y del comando de dirección aplicado.
+    Calcula los errores geométricos uniformes (ver cabecera) y escribe la fila en el CSV activo.
+    error_*_ctrl: las señales internas del controlador en ese instante (solo diagnóstico).
+    """
+    global _aviso_sin_csv_emitido
+    tractor = sensores['truck_pos']
+    trailer = sensores['trailer_pos']
+    psi_tractor = float(sensores['psi_truck'])
+    psi_trailer = float(sensores['psi_trailer'])
+    delta = float(sensores['delta_F2'])
+    v = float(sensores['v1'])
+
+    lat_tr = lat_rm = e_ang = None
+    pie_tr = pie_rm = None
+    if _sesion.get('seg_tractor') is not None:
+        lat_tr, _, pie_tr = _sesion['seg_tractor'].proyectar(tractor)
+        lat_rm, rumbo_rm, pie_rm = _sesion['seg_trailer'].proyectar(trailer)
+        rumbo_avance = psi_trailer + (math.pi if _sesion['sentido'] < 0 else 0.0)
+        e_ang = _envolver(rumbo_rm - rumbo_avance)
+
+    if _sesion.get('punto_control', 'tractor') == 'trailer':
+        real, pie, lat = trailer, pie_rm, lat_rm
+    else:
+        real, pie, lat = tractor, pie_tr, lat_tr
+    if lat is None:                       # sin ruta: se registran las señales del controlador
+        lat, e_ang = error_lateral_ctrl, error_angular_ctrl
+    x_ref, y_ref = (float(pie[0]), float(pie[1])) if pie is not None else (None, None)
+
+    historial['tiempo'].append(t)
+    historial['x1_lat'].append(lat if lat is not None else float('nan'))
+    historial['x2_ang'].append(e_ang if e_ang is not None else float('nan'))
+    historial['x3_tij'].append(delta)
+    historial['volante'].append(float(steering))
+
+    if archivo_csv_activo is None:
+        if not _aviso_sin_csv_emitido:
+            print("[telemetria] AVISO: registrar_muestra() se llamó sin inicializar_telemetria(); "
+                  "no se está escribiendo ningún CSV.")
+            _aviso_sin_csv_emitido = True
+        return
+    _fila_csv([t, float(real[0]), float(real[1]), x_ref, y_ref, lat, e_ang, delta, float(steering),
+               float(tractor[0]), float(tractor[1]), float(trailer[0]), float(trailer[1]), psi_tractor, psi_trailer, v,
+               lat_tr, lat_rm, error_lateral_ctrl, error_angular_ctrl, int(bool(control_actualizado))])
+    _sesion['n'] = _sesion.get('n', 0) + 1
+    if _sesion.get('t_ini') is None:
+        _sesion['t_ini'] = t
+    _sesion['t_fin'] = t
+
+
+def finalizar_telemetria(resultado, **extra):
+    """
+    Cierra la corrida: escribe telemetria_<...>.json con los metadatos y el resultado
+    ('completada', 'jackknife' o 'tiempo_maximo') e imprime un resumen.
+    """
+    if archivo_csv_activo is None:
+        return
+    meta = dict(_sesion.get('metadatos', {}))
+    meta.update(extra)
+    n = _sesion.get('n', 0)
+    t0, t1 = _sesion.get('t_ini'), _sesion.get('t_fin')
+    meta.update(resultado=resultado, muestras=n, sentido=_sesion.get('sentido', 1),
+                punto_control=_sesion.get('punto_control'), archivo_csv=os.path.basename(archivo_csv_activo),
+                duracion_s=(t1 - t0) if (t0 is not None and t1 is not None) else None,
+                frecuencia_media_hz=((n - 1) / (t1 - t0)) if (n > 1 and t1 > t0) else None,
+                fecha=time.strftime('%Y-%m-%d %H:%M:%S'))
+    archivo_json = os.path.splitext(archivo_csv_activo)[0] + '.json'
+    with open(archivo_json, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2, default=float)
+    f_txt = f"{meta['frecuencia_media_hz']:.1f} Hz" if meta['frecuencia_media_hz'] else '-'
+    print(f"[telemetria] {os.path.basename(archivo_csv_activo)}: {n} muestras, {f_txt}, resultado: {resultado}")
+
+
 def registrar_estado(t, x_real, y_real, x_ref, y_ref, error_lateral, error_angular, articulacion, volante):
     """
-    Guarda los datos en la memoria para graficar, los escribe en el archivo .log
-    y añade una fila al CSV activo (ver inicializar_telemetria).
+    (Interfaz anterior, se mantiene por compatibilidad.) Guarda los datos en memoria y en el .log y
+    añade una fila al CSV activo con las 9 columnas originales; las nuevas quedan vacías.
     """
     global _aviso_sin_csv_emitido
 
@@ -68,14 +238,9 @@ def registrar_estado(t, x_real, y_real, x_ref, y_ref, error_lateral, error_angul
     # Escribir en el log
     logger.debug(f"Lat(x1): {error_lateral:.4f} | Ang(x2): {error_angular:.4f} | Tij(x3): {articulacion:.4f} | Volante: {volante:.4f} | Tiempo: {t:.4f}")
 
-    # Escribir en el CSV (modo append: cada fila queda en disco al instante, así
-    # los datos sobreviven aunque la simulación termine en jackknife o se corte)
     if archivo_csv_activo is not None:
-        with open(archivo_csv_activo, 'a', newline='', encoding='utf-8') as f:
-            csv.writer(f, lineterminator='\n').writerow(
-                [t, x_real, y_real, x_ref, y_ref,
-                 error_lateral, error_angular, articulacion, volante]
-            )
+        _fila_csv([t, x_real, y_real, x_ref, y_ref, error_lateral, error_angular, articulacion, volante]
+                  + [None] * (len(CSV_CABECERA) - 9))
     elif not _aviso_sin_csv_emitido:
         print("[telemetria] AVISO: registrar_estado() se llamó sin inicializar_telemetria(); "
               "no se está escribiendo ningún CSV.")
@@ -181,7 +346,7 @@ def generar_diagrama_pure_pursuit_forward(output_path="./pure_pursuit_forward.pn
     ax.arrow(x1, y1, v_length * np.cos(psi1), v_length * np.sin(psi1),
              head_width=0.3, head_length=0.4, fc='navy', ec='navy', linewidth=1.5)
     ax.plot([x1, x1 + v_length * np.cos(psi1)], [y1, y1 + v_length * np.sin(psi1)],
-            color='navy', linewidth=2, label='Eje Longitudinal ($\psi_1$)')
+            color='navy', linewidth=2, label=r'Eje Longitudinal ($\psi_1$)')
 
     # 9. Puntos clave (Tractor y P_look)
     ax.scatter([x1], [y1], color='navy', s=120, zorder=5, label='Eje Trasero Tractor $(x_1, y_1)$')
@@ -258,4 +423,4 @@ def generar_diagrama_ray_casting(output_path="./ray_casting_end_of_path.png"):
 
 
 # if __name__ == "__main__":
-#     main()
+#     main()
