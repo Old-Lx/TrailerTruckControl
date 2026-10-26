@@ -1,0 +1,9 @@
+# Entorno con el que se ejecutan los experimentos en BeamNG.tech v0.38.3 (Python 3.11.5).
+# BeamNG.tech 0.38 es compatible con beamngpy 1.35.x (tabla de compatibilidad oficial).
+beamngpy==1.35
+numpy==1.26.4
+scipy==1.13.0
+opencv-python==4.9.0.80
+matplotlib==3.8.2
+pandas==2.2.0
+python-dotenv==1.2.1
