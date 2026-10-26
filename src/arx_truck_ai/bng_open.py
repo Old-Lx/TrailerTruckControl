@@ -1,6 +1,5 @@
 from beamngpy import BeamNGpy, Scenario
 from dotenv import load_dotenv # Para leer del .env
-import numpy as np
 from os import getenv
 from arx_truck_ai.truck_trailer import TruckTrailer, gen_truck_and_trailer
 
@@ -52,4 +51,4 @@ def main(direction: str):
     return truck_trailer, orig
 
 if __name__ == "__main__":
-    main()
+    main('fwd')   # solo abre el escenario de marcha adelante; los experimentos se lanzan desde src/main.py

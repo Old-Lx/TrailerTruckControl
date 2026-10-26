@@ -906,7 +906,7 @@ class TruckTrailer:
         trailer_right_vec /= np.linalg.norm(trailer_right_vec)
 
 
-        # --- EXTRACCIÓN DE 8 GRADOS DE LIBERTAD (ROLL Y PITCH) ---
+        # --- ÁNGULO DE BALANCEO (ROLL) DEL CHASIS ---
         # Dado que BeamNG aplica dinámicas de suspensión, el chasis puede balancearse (Roll).
         # El vector "right" del camión cruzando dir y up
         truck_dir_vec = np.array(dir_truck, dtype=np.float32)

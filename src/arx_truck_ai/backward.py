@@ -1,13 +1,11 @@
 import math
 from arx_truck_ai import bng_open
-from arx_truck_ai.debugging_sys import (registrar_muestra, generar_grafico_evaluacion, generar_diagrama_ray_casting,
+from arx_truck_ai.debugging_sys import (registrar_muestra, generar_grafico_evaluacion,
                                        inicializar_telemetria, finalizar_telemetria)
 from arx_truck_ai import truck_trailer as tt
 from arx_truck_ai.fin_ruta import (distancia_restante, velocidad_limite_fin, debe_frenar,
                                    punto_objetivo_extendido, indice_segmento, detener_en_fin)
-from beamngpy import Vehicle
 import numpy as np
-import time
 
 # ---------------------------------------------------------------------------
 # Fin de ruta (ver fin_ruta.py). El punto que debe detenerse en el final es trailer_pos.
@@ -302,7 +300,7 @@ def control_aditivo_histeresis(
             k_trailer = K_TRAILER * (1.0 - severidad) + K_TRAILER_PANICO * severidad
             k_truck   = K_TRUCK   * (1.0 - severidad) + K_TRUCK_PANICO   * severidad
 
-    # Integración Dinámica de Suspensión (8-DOF Active Yaw/Roll Control)
+    # Atenuación del volante por balanceo (roll) de la suspensión
     # Evaluamos la estabilidad gravitacional de las masas (Trailer Roll)
     # Un "roll" de 0.08 rad (~4.5°) ya es peligroso para un tráiler con carga.
     limite_roll = 0.08

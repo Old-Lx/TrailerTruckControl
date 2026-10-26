@@ -5,9 +5,7 @@ from arx_truck_ai import truck_trailer as tt
 from arx_truck_ai import bng_open
 from arx_truck_ai.fin_ruta import (distancia_restante, velocidad_limite_fin, debe_frenar,
                                    punto_objetivo_extendido, indice_segmento, detener_en_fin)
-from beamngpy import Vehicle
 import numpy as np
-import time
 
 # ---------------------------------------------------------------------------
 # Fin de ruta (ver fin_ruta.py). El punto que debe detenerse en el final es truck_pos.
@@ -95,7 +93,7 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
     # Normaliza el error a [-pi, pi]
     yaw_error = (raw_error + math.pi) % (2 * math.pi) - math.pi
 
-    # Integración Dinámica de Suspensión (8-DOF Active Yaw/Roll Control)
+    # Atenuación del volante por balanceo (roll) de la suspensión
     # Evaluamos la estabilidad gravitacional de las masas (Truck Roll)
     limite_roll = 0.08
     limite_roll_rate = 0.15 

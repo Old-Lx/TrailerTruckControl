@@ -1,9 +1,7 @@
 import math
 from arx_truck_ai import bng_open
-from beamngpy import Vehicle
 import numpy as np
 import scipy.linalg as la
-import time
 from arx_truck_ai.debugging_sys import (registrar_muestra, generar_grafico_evaluacion, inicializar_telemetria,
                                        finalizar_telemetria)
 from arx_truck_ai import truck_trailer as tt
@@ -134,16 +132,15 @@ def precalcular_ganancias_lqr(V0_nominal, D0_nominal,
     """
     Precalcula UNA SOLA VEZ (fuera del bucle de control) las matrices K en
     cada punto de operación de articulación. Así se evita resolver la CARE
-    en cada tick a 60Hz; el bucle de control solo interpola.
+    en cada ciclo de control; el bucle solo interpola.
 
     V0_nominal / D0_nominal son el punto de DISEÑO fijo, no la velocidad
-    instantánea del camión. Esto es coherente con el análisis de
-    incertidumbre parametrica (+-10% de V0 y D0) que ya hiciste en
-    modelaje.m: esa validación de robustez es justo lo que permite fijar
-    la ganancia en un punto nominal sin recalcularla en tiempo real. Si en
-    tus pruebas la velocidad real se aleja de ese +-10% ya validado,
-    conviene volver a correr el análisis de Bode/loop-shaping del .m con el
-    nuevo rango, o extender esta tabla a una segunda dimensión sobre V.
+    instantánea del camión: la K no se recalcula con la velocidad real.
+    (El análisis de incertidumbre de matlab/modelaje.m usa el modelo nominal
+    de 3 estados, no este modelo de 5 estados, así que no cubre este diseño.)
+    Con el modelo identificado, una K fija en V0 = 2 m/s deja el lazo cerrado
+    marginal a 0.5-1 m/s (velocidades del tramo de llegada); si eso pesa en
+    los resultados, extender la tabla a una segunda dimensión sobre V.
 
     Cada K en la tabla ya incorpora la variación continua de R y Q_33 (ver
     _R_lqr_continuo / _Q33_continuo): al interpolar entre puntos de
@@ -179,20 +176,21 @@ def interpolar_ganancia_lqr(x3_delta_F2, tabla_ganancias):
 
     return Ks[-1]
 
-def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trailer_roll, trailer_roll_rate, 
+def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, trailer_roll, trailer_roll_rate,
                         velocidad, ruta, current_idx, dt, integrador_error, x_hat, previous_steering,
-                        min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5,
                         tabla_ganancias=None):
     """
-    Control LQR Óptimo con variables de estado (Gain Scheduled, sin observador).
+    Control LQR por realimentación de estados con programación de ganancias sobre |delta_F2|.
+    x1..x4 se miden; x5 se estima con el modelo del actuador (no hay observador de Luenberger).
     Retorna (steering, throttle, brake, next_idx, finished, nuevo_integrador, x_hat_nuevo,
              x1_error_lateral, x2_error_angular, x3_delta_F2, steering_raw).
 
-    Estados del controlador MIMO:
-    x1: Error lateral (desviación espacial hacia la ruta)
-    x2: Error angular (heading error del remolque)
-    x3: Ángulo de articulación (delta_F2)
-    x4: Integrador del error (chattering prevention)
+    Estados (ver MODELO DE DISEÑO DEL LQR al inicio del archivo):
+    x1: Error lateral del punto medido del remolque [m]
+    x2: Error angular del remolque respecto a la tangente de la ruta [rad]
+    x3: Ángulo de articulación delta_F2 [rad]
+    x4: Integral del error lateral [m*s] (solo integra con |x1| < 3 cm, saturada en ±0.15)
+    x5: Posición real estimada del volante (comando normalizado)
 
     tabla_ganancias: dict devuelto por precalcular_ganancias_lqr(), calculado
     UNA SOLA VEZ antes del bucle de control. Aquí NO se resuelve ninguna
@@ -237,12 +235,7 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     dy_tr = pos_trailer[1] - pt_actual_tr[1]
     x1_error_lateral = dy_tr * math.cos(yaw_path) - dx_tr * math.sin(yaw_path)
 
-    # 2. Lookahead: solo se usa para avanzar el índice, no para calcular x2
-    dist_error = abs(x1_error_lateral)
-    lookahead = np.clip(min_lookahead + (k_lookahead_gain * abs(velocidad)) - (dist_error * 2), 2.0, 10.0)
-    # (El bloque de búsqueda de target_idx puede eliminarse si no se usa target_pt en ningún otro lado)
-
-    # 3. Errores para el modelo LQR
+    # 2. Errores para el modelo LQR (el LQR no usa punto de lookahead)
 
     # A. Error angular (x2): alinear el tráiler con la dirección del segmento de ruta
     psi_trailer_reversa = psi_trailer + math.pi  # el tráiler se mueve hacia atrás
@@ -283,12 +276,12 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, delta_F2_rate, trail
     alfa_volante = 1.0 - math.exp(-max(dt, 1e-4) / TAU_VOLANTE_NOMINAL)
     x_hat[4,0] += alfa_volante * (previous_steering - x_hat[4,0])
     
-    # 5. Ganancias MIMO y Ejecución LQR
+    # 3. Ganancias MIMO y Ejecución LQR
     # Cálculo formal óptimo: u = -K * x, con u = comando de volante normalizado [-1, 1]
     # (.item(): compatible con NumPy>=2.4)
     steering_raw = - float((K_mimo @ x_hat).item())
     
-    # PREVENCIÓN EXTRA: Sistema de Suspensión Dinámica (8-DOF Active Control Anti-Roll)
+    # PREVENCIÓN EXTRA: atenuación del volante por balanceo (roll) del remolque
     limite_roll = 0.08
     limite_roll_rate = 0.15
     atenuacion_dinamica = 1.0
@@ -334,8 +327,7 @@ def main():
     route_points = truck_trailer.route
     nombre_ruta = truck_trailer.nombre_ruta
 
-    # Inicialización de estado para LQR (Integrador, estimación del volante y Derivadas)
-    previous_delta_F2 = 0.0
+    # Inicialización de estado para LQR (Integrador, estimación del volante y tasa de roll)
     previous_trailer_roll = 0.0
     previous_steering = 0.0
     
@@ -343,9 +335,6 @@ def main():
     # Posición estimada del volante)
     x_hat = np.zeros((5, 1))
     integrador_error = 0.0
-
-    delta_F2_rate_filtrada = 0.0
-    alpha_rate = 0.3  # 0=sin filtro, 1=completamente suavizado
 
     # D0_NOMINAL es la longitud del tráiler L2 del modelo de diseño (L2_NOMINAL).
     D0_NOMINAL = L2_NOMINAL
@@ -399,18 +388,15 @@ def main():
             dt = max(dt, 1e-4)
             t_ultimo_control = t
 
-            # Tasas de cambio (no se integran en A/B; se usan en la atenuación dinámica de roll)
-            delta_F2_rate_cruda = (delta_F2 - previous_delta_F2) / dt
-            delta_F2_rate_filtrada = alpha_rate * delta_F2_rate_filtrada + (1 - alpha_rate) * delta_F2_rate_cruda
+            # Tasa de roll (no está en A/B; se usa en la atenuación dinámica de roll)
             trailer_roll_rate = (trailer_roll - previous_trailer_roll) / dt
-            previous_delta_F2 = delta_F2
             previous_trailer_roll = trailer_roll
 
             # Control Estado LQR (MIMO, Gain Scheduled)
             steering, throttle, brake, current_idx, finished, integrador_error, x_hat, x1, x2, x3, s_raw = control_lqr_reversa(
-                pos_trailer, psi_trailer, delta_F2, delta_F2_rate_filtrada, trailer_roll, trailer_roll_rate,
+                pos_trailer, psi_trailer, delta_F2, trailer_roll, trailer_roll_rate,
                 velocidad, route_points, current_idx, dt, integrador_error, x_hat, previous_steering=previous_steering,
-                min_lookahead=2.0, max_lookahead=8.0, k_lookahead_gain=1.0, tabla_ganancias=tabla_ganancias
+                tabla_ganancias=tabla_ganancias
             )
             truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)
             previous_steering = steering

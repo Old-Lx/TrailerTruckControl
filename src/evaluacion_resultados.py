@@ -14,10 +14,10 @@ Salidas (en la carpeta de salida, por defecto figuras/cap5/):
     trayectoria_recta_xy.{png,pdf}, trayectoria_parabola_xy.{png,pdf}, trayectoria_seno_xy.{png,pdf}
     respuestas_temporales_comparativas_<ruta>.{png,pdf}   (una por variante de ruta con datos)
 
-Uso:
-    python evaluacion_resultados.py
-    python evaluacion_resultados.py --datos corridas/ --salida figuras/cap5 --formatos png pdf --dpi 300
-    python evaluacion_resultados.py --unidad-articulacion rad
+Uso (desde la raíz del repositorio):
+    python src/evaluacion_resultados.py
+    python src/evaluacion_resultados.py --datos corridas/ --salida figuras/cap5 --formatos png pdf --dpi 300
+    python src/evaluacion_resultados.py --unidad-articulacion rad
 
 Métricas (por corrida, sobre todas las muestras registradas del seguimiento):
     RMSE_lat  = sqrt(mean(x1^2))            x1: error lateral con signo del punto de control [m]
@@ -492,6 +492,9 @@ def evaluar(carpeta='.', salida='figuras/cap5', formatos=('png', 'pdf'), dpi=300
 
 
 def main(argv=None):
+    # La consola de Windows usa cp1252 y no puede imprimir θ, ω, ∥... de la tabla
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     ap = argparse.ArgumentParser(description="Métricas, tablas y figuras del Capítulo 5.")
     ap.add_argument('--datos', default='.', help="carpeta con telemetria_*.csv (por defecto, la actual)")
     ap.add_argument('--salida', default='figuras/cap5', help="carpeta de salida (por defecto figuras/cap5)")

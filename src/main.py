@@ -1,9 +1,10 @@
 """
 main.py - Lanzador de experimentos del Capítulo 5.
 
-1. Elige la ruta (TIPO_RUTA) y el algoritmo abajo y ejecuta:  python -m arx_truck_ai.main
+1. Elige la ruta (TIPO_RUTA) y el algoritmo abajo y ejecuta, desde la raíz del repositorio:
+       python src/main.py
    Cada corrida escribe telemetria_<algoritmo>_<ruta>.csv/.json y ruta_<ruta>.csv en la carpeta actual.
-2. Con todas las corridas hechas:  python evaluacion_resultados.py --datos . --salida figuras/cap5
+2. Con todas las corridas hechas:  python src/evaluacion_resultados.py --datos . --salida figuras/cap5
 """
 from arx_truck_ai import truck_trailer
 from arx_truck_ai import forward as fwd, backward as bwd, backwards_lqr as bwd_lqr

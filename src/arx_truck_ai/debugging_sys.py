@@ -12,14 +12,6 @@ import time
 # ==========================================
 logging.getLogger('beamngpy').setLevel(logging.WARNING)
 
-# Configuración del Logger para generar el archivo de texto
-logger = logging.getLogger('telemetry')
-logger.setLevel(logging.DEBUG)
-file_handler = logging.FileHandler('telemetria_sistema.log', mode='w')
-file_handler.setFormatter(logging.Formatter('%(message)s'))
-logger.addHandler(file_handler)
-logger.propagate = False # Evita que nuestros datos se mezclen con la consola global
-
 # Diccionario global para almacenar el historial de datos en memoria para la gráfica
 historial = {
     'tiempo': [],
@@ -221,31 +213,6 @@ def finalizar_telemetria(resultado, **extra):
     print(f"[telemetria] {os.path.basename(archivo_csv_activo)}: {n} muestras, {f_txt}, resultado: {resultado}")
 
 
-def registrar_estado(t, x_real, y_real, x_ref, y_ref, error_lateral, error_angular, articulacion, volante):
-    """
-    (Interfaz anterior, se mantiene por compatibilidad.) Guarda los datos en memoria y en el .log y
-    añade una fila al CSV activo con las 9 columnas originales; las nuevas quedan vacías.
-    """
-    global _aviso_sin_csv_emitido
-
-    # Guardar en memoria
-    historial['tiempo'].append(t)
-    historial['x1_lat'].append(error_lateral)
-    historial['x2_ang'].append(error_angular)
-    historial['x3_tij'].append(articulacion)
-    historial['volante'].append(volante)
-    
-    # Escribir en el log
-    logger.debug(f"Lat(x1): {error_lateral:.4f} | Ang(x2): {error_angular:.4f} | Tij(x3): {articulacion:.4f} | Volante: {volante:.4f} | Tiempo: {t:.4f}")
-
-    if archivo_csv_activo is not None:
-        _fila_csv([t, x_real, y_real, x_ref, y_ref, error_lateral, error_angular, articulacion, volante]
-                  + [None] * (len(CSV_CABECERA) - 9))
-    elif not _aviso_sin_csv_emitido:
-        print("[telemetria] AVISO: registrar_estado() se llamó sin inicializar_telemetria(); "
-              "no se está escribiendo ningún CSV.")
-        _aviso_sin_csv_emitido = True
-
 def generar_grafico_evaluacion(titulo='Evaluación de Respuesta del Controlador'):
     """
     Genera un panel de 3 gráficas (Subplots) usando matplotlib para evaluar 
@@ -289,7 +256,7 @@ def generar_grafico_evaluacion(titulo='Evaluación de Respuesta del Controlador'
     print("Gráfica guardada como 'respuesta_sistema.png'. Abriendo ventana...")
     plt.show() # Muestra la ventana interactiva
 
-# Para backward
+# Figuras explicativas del Capítulo 4 (no se llaman durante los experimentos)
 def generar_diagrama_pure_pursuit_forward(output_path="./pure_pursuit_forward.png"):
     """
     Genera el esquema geométrico de Persecución Pura (Pure Pursuit) en marcha hacia adelante.
@@ -372,6 +339,12 @@ def generar_diagrama_pure_pursuit_forward(output_path="./pure_pursuit_forward.pn
     print(f"Imagen guardada exitosamente en: {output_path}")
 
 def generar_diagrama_ray_casting(output_path="./ray_casting_end_of_path.png"):
+    """
+    Objetivo virtual de fin de ruta tal como lo calcula fin_ruta.punto_objetivo_extendido():
+    sobre la prolongación recta del último segmento, ANCLADA EN EL ÚLTIMO PUNTO P_N, a distancia L
+    del remolque (no desde el remolque en la dirección del último segmento).
+    """
+    from arx_truck_ai.fin_ruta import punto_objetivo_extendido
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
 
@@ -379,8 +352,8 @@ def generar_diagrama_ray_casting(output_path="./ray_casting_end_of_path.png"):
     x_ruta = np.array([0.0, 2.0, 4.0, 6.0, 8.0])
     y_ruta = np.array([0.0, 0.5, 1.2, 1.8, 2.0])
 
-    # Posición del remolque cerca del final
-    x_tr, y_tr = 7.0, 1.9
+    # Posición del remolque cerca del final, desviada lateralmente de la ruta
+    x_tr, y_tr = 7.0, 1.3
     L = 4.0  # Lookahead
 
     # Vector tangente d_last de la última arista
@@ -389,9 +362,8 @@ def generar_diagrama_ray_casting(output_path="./ray_casting_end_of_path.png"):
     norm = np.hypot(dx, dy)
     ux, uy = dx / norm, dy / norm
 
-    # Punto objetivo proyectado por Ray-Casting
-    x_target = x_tr + ux * L
-    y_target = y_tr + uy * L
+    # Punto objetivo virtual: el mismo cálculo que usan los controladores
+    x_target, y_target = punto_objetivo_extendido(list(zip(x_ruta, y_ruta)), (x_tr, y_tr), L)
 
     # Graficar ruta
     ax.plot(x_ruta, y_ruta, 'ro-', linewidth=2, markersize=6, label=r'Waypoints de Ruta ($P_k$)')
