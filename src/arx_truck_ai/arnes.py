@@ -16,7 +16,7 @@ IMPORTANTE: los CSV y las figuras que produce son SINTÉTICOS. Sirven para valid
             NO son resultados de la tesis.
 
 Uso (desde una carpeta aparte, porque escribe los CSV en la carpeta actual):
-    python ../arx_truck_ai/arnes.py <forward|backward|lqr> <tipo_ruta 0..6>
+    python ../arx_truck_ai/arnes.py <forward|backward|lqr> <tipo_ruta 0..6> [CONSTANTE=valor ...]
 Los .py del proyecto se buscan en la carpeta de este archivo (o en la variable de entorno CAP5_SRC).
 """
 import builtins, collections, importlib.util, math, os, sys, time, types
@@ -211,9 +211,25 @@ def _bng_open_main(direction):
 bo = types.ModuleType("arx_truck_ai.bng_open"); bo.main = _bng_open_main
 sys.modules["arx_truck_ai.bng_open"] = bo; pkg.bng_open = bo
 _load("arx_truck_ai.fin_ruta", "fin_ruta.py")
+_load("arx_truck_ai.geometria_ruta", "geometria_ruta.py")
 _load("arx_truck_ai.debugging_sys", "debugging_sys.py")
 archivo = {"forward": "forward.py", "backward": "backward.py", "lqr": "backwards_lqr.py"}[algoritmo]
 mod = _load(f"arx_truck_ai.{os.path.splitext(archivo)[0]}", archivo)
+
+# Ajustes opcionales NOMBRE=valor tras la ruta (p. ej. PREALIMENTACION_CURVATURA=False): se aplican al
+# módulo del algoritmo, o a truck_trailer si la constante es de ese módulo. Sirve para comparar variantes.
+import ast
+for arg in sys.argv[3:]:
+    nombre, valor = arg.split('=', 1)
+    destino = mod if hasattr(mod, nombre) else tt
+    if not hasattr(destino, nombre):
+        raise SystemExit(f"arnes: no existe la constante {nombre}")
+    try:
+        valor = ast.literal_eval(valor)
+    except (ValueError, SyntaxError):
+        pass                                   # texto sin comillas, p. ej. MODO_INTEGRADOR=corregido
+    setattr(destino, nombre, valor)
+    print(f"[arnes] {destino.__name__}.{nombre} = {valor!r}")
 
 builtins.input = lambda *a, **k: ""            # el input() final de cada main() no debe bloquear
 import matplotlib.pyplot as plt

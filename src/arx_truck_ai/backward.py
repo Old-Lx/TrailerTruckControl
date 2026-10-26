@@ -75,7 +75,7 @@ def control_aditivo_histeresis(
         trailer_roll, trailer_roll_rate, 
         velocidad, ruta, current_idx, 
         panic_mode: bool  = False,  # estado de la máquina de histéresis de pánico
-        prev_e_trailer: float = 0.0,          # e_trailer crudo del tick anterior (para la derivada cruda)
+        prev_e_trailer=None,                  # e_trailer crudo del tick anterior (None en el primer tick: derivada 0)
         e_trailer_rate_filtrada: float = 0.0, # salida EMA anterior de la derivada de e_trailer (recursión del filtro)
         prev_seg_dir=None,  # (ux,uy) dirección unitaria del segmento de ruta usado el tick anterior; None en el primer tick
         dt: float         = 0.02,
@@ -240,7 +240,7 @@ def control_aditivo_histeresis(
     # frontera +-pi la diferencia salta ~2*pi aunque el heading físico casi
     # no cambió ("derivative kick"). Envolver la diferencia ANTES de dividir
     # por dt evita esa alucinación de cientos de rad/s.
-    e_trailer_rate_cruda = _envolver_angulo(e_trailer - prev_e_trailer) / dt
+    e_trailer_rate_cruda = 0.0 if prev_e_trailer is None else _envolver_angulo(e_trailer - prev_e_trailer) / dt
     e_trailer_rate_filtrada = (
         alpha_ema_trailer * e_trailer_rate_filtrada
         + (1 - alpha_ema_trailer) * e_trailer_rate_cruda
@@ -375,9 +375,11 @@ def main():
                            frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
                            if tt.MODO_SINCRONO else None)
 
-    # Variables de estado inicial para el subsistema derivativo del jackknifing y roll
-    previous_delta_F2 = 0.0
-    previous_trailer_roll = 0.0
+    # Variables de estado inicial para el subsistema derivativo del jackknifing y roll.
+    # None: en el primer ciclo de control las derivadas valen 0 (antes se derivaba contra 0 y, si el
+    # estado inicial no era nulo, el primer comando de volante tenía un pico falso).
+    previous_delta_F2 = None
+    previous_trailer_roll = None
 
     # Estado para la máquina de histéresis de pánico
     panic_mode_state  = False
@@ -389,7 +391,7 @@ def main():
     alpha_rate = 0.15
 
     # Estado para la acción derivativa sobre la trayectoria
-    prev_e_trailer_state = 0.0
+    prev_e_trailer_state = None   # None en el primer ciclo (ver arriba)
     e_trailer_rate_filtrada_state = 0.0
 
     # Estado para el filtro de continuidad de closest_idx (evita saltos de
@@ -428,12 +430,12 @@ def main():
             t_ultimo_control = t
 
             # Tasa de cambio del ángulo de articulación (delta_F2_rate), suavizada con un EMA
-            delta_F2_rate_cruda = (delta_F2 - previous_delta_F2) / dt
+            delta_F2_rate_cruda = 0.0 if previous_delta_F2 is None else (delta_F2 - previous_delta_F2) / dt
             delta_F2_rate_filtrada = alpha_rate * delta_F2_rate_filtrada + (1 - alpha_rate) * delta_F2_rate_cruda
             previous_delta_F2 = delta_F2
 
             # Calcular la fuerza lateral de balanceo (tasa de roll)
-            trailer_roll_rate = (trailer_roll - previous_trailer_roll) / dt
+            trailer_roll_rate = 0.0 if previous_trailer_roll is None else (trailer_roll - previous_trailer_roll) / dt
             previous_trailer_roll = trailer_roll
 
             # Control Aditivo (Pure Pursuit consolidado)

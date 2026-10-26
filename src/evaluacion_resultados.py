@@ -19,7 +19,7 @@ Uso (desde la raíz del repositorio):
     python src/evaluacion_resultados.py --datos corridas/ --salida figuras/cap5 --formatos png pdf --dpi 300
     python src/evaluacion_resultados.py --unidad-articulacion rad
 
-Métricas (por corrida, sobre todas las muestras registradas del seguimiento):
+Métricas (por corrida):
     RMSE_lat  = sqrt(mean(x1^2))            x1: error lateral con signo del punto de control [m]
                                              (tractor en marcha adelante, remolque en reversa)
     RMSE_yaw  = sqrt(mean(e_trailer^2))     e_trailer: error angular del remolque respecto de la tangente
@@ -28,6 +28,23 @@ Métricas (por corrida, sobre todas las muestras registradas del seguimiento):
     S_smooth  = 1/(N-1) * sum|u_{k+1}-u_k|  índice de suavidad del mando de dirección u ∈ [-1, 1]
                                              (adimensional; depende de la frecuencia de registro: compare
                                              corridas registradas a la misma frecuencia)
+
+Fases de la corrida. Varias rutas empiezan desalineadas a propósito (recta_y y parabola_y perpendiculares
+al vehículo, recta_diagonal a 45°): el controlador debe primero reorientar el conjunto (CAPTURA) y luego
+seguir la ruta (SEGUIMIENTO). Para no mezclar ambas cosas en un solo RMSE:
+    captura      termina en el primer instante a partir del cual |x1| < UMBRAL_CAPTURA_LAT_M se cumple sin
+                 interrupción durante VENTANA_CAPTURA_S (a 2 m/s son 6 m recorridos dentro de la banda, lo que
+                 exige también el rumbo alineado: con 0.1 rad de error se saldría de la banda).
+                 No se usa el error angular: el punto medido del remolque está a DP = 5.2 m de su eje, así que
+                 en una curva de curvatura kappa el error angular de régimen es ≈ DP*kappa aunque el
+                 seguimiento sea perfecto (≈ 0.38 rad en la senoide con R = 13.5 m).
+    t_captura    duración de la captura [s];  d_captura: distancia recorrida por el punto de control [m];
+                 theta_max_captura: articulación máxima durante la captura [°].
+    RMSE_lat_seg, RMSE_yaw_seg, theta_max_seg: las mismas métricas solo sobre el seguimiento.
+    Si la corrida nunca entra en la banda (p. ej. un controlador que recorta las curvas de la senoide más de
+    0.5 m), t_captura queda vacío (NaN) y las métricas de "seguimiento" se calculan sobre toda la corrida
+    (columna capturada = False; en las tablas se marcan con *).
+Las métricas sobre la corrida completa (rmse_lat, rmse_yaw, theta_max) se conservan en metricas.csv.
 """
 import argparse
 import json
@@ -89,6 +106,10 @@ RESULTADO_TXT = {'completada': 'Completada', 'jackknife': 'Jackknife', 'tiempo_m
 # Líneas de referencia de la articulación [rad] (umbrales del sistema)
 UMBRAL_PANICO_RAD = 0.42      # límite duro de pánico del controlador aditivo
 UMBRAL_JACKKNIFE_RAD = 1.0    # corte por jackknife en backward.py / backwards_lqr.py
+
+# Fin de la fase de captura (ver docstring)
+UMBRAL_CAPTURA_LAT_M = 0.5
+VENTANA_CAPTURA_S = 3.0
 
 # Estilo (figuras de tesis)
 TINTA = '#0b0b0b'             # texto principal
@@ -191,19 +212,62 @@ def indice_suavidad(u):
     return float(np.mean(np.abs(np.diff(u)))) if len(u) > 1 else float('nan')
 
 
+def _num(v):
+    return float(v) if v is not None else float('nan')
+
+
+def indice_fin_captura(t, e_lat):
+    """Índice de la primera muestra desde la cual el conjunto queda alineado (ver docstring); None si nunca."""
+    ok = np.abs(e_lat) < UMBRAL_CAPTURA_LAT_M
+    inicio = None
+    for i in range(len(t)):
+        if ok[i]:
+            if inicio is None:
+                inicio = i
+            if t[i] - t[inicio] >= VENTANA_CAPTURA_S:
+                return inicio
+        else:
+            inicio = None
+    return None
+
+
 def calcular_metricas(c):
     df = c.df
+    t = df['t'].to_numpy(dtype=float)
+    e_lat = df['error_lateral'].to_numpy(dtype=float)
+    e_ang = df['error_angular'].to_numpy(dtype=float)
+    delta_deg = np.abs(df['delta_F2'].to_numpy(dtype=float)) * 180.0 / math.pi
+    x, y = c.xy_control()
+    i_cap = indice_fin_captura(t, e_lat)
+    if i_cap is None:
+        t_cap = d_cap = th_cap = float('nan')
+        rmse_lat_seg, rmse_yaw_seg, th_seg = rmse(e_lat), rmse(e_ang), float(np.nanmax(delta_deg))
+    else:
+        t_cap = float(t[i_cap] - t[0])
+        d_cap = float(np.sum(np.hypot(np.diff(x[:i_cap + 1]), np.diff(y[:i_cap + 1])))) if i_cap > 0 else 0.0
+        th_cap = float(np.nanmax(delta_deg[:i_cap + 1]))
+        rmse_lat_seg = rmse(e_lat[i_cap:])
+        rmse_yaw_seg = rmse(e_ang[i_cap:])
+        th_seg = float(np.nanmax(delta_deg[i_cap:]))
     return dict(
         algoritmo=c.algoritmo, ruta=c.ruta,
-        rmse_lat=rmse(df['error_lateral']),
-        rmse_yaw=rmse(df['error_angular']),
-        theta_max_deg=float(np.nanmax(np.abs(df['delta_F2'].to_numpy())) * 180.0 / math.pi),
+        t_captura_s=t_cap,
+        capturada=i_cap is not None,
+        rmse_lat_seg=rmse_lat_seg,
+        rmse_yaw_seg=rmse_yaw_seg,
+        theta_max_deg=float(np.nanmax(delta_deg)),
         s_smooth=indice_suavidad(df['steering']),
         resultado=c.resultado,
-        duracion_s=float(df['t'].iloc[-1] - df['t'].iloc[0]),
+        d_captura_m=d_cap,
+        theta_max_captura_deg=th_cap,
+        theta_max_seg_deg=th_seg,
+        rmse_lat=rmse(e_lat),
+        rmse_yaw=rmse(e_ang),
+        duracion_s=float(t[-1] - t[0]),
         muestras=int(len(df)),
         frecuencia_hz=float(c.frecuencia_hz),
-        sobrepaso_m=c.meta.get('sobrepaso_m'),
+        sobrepaso_m=_num(c.meta.get('sobrepaso_m')),
+        distancia_final_m=_num(c.meta.get('distancia_final_m')),
         formato='anterior' if c.legado else 'actual',
         archivo=os.path.basename(c.archivo),
     )
@@ -212,7 +276,8 @@ def calcular_metricas(c):
 # =====================================================================================
 # TABLAS
 # =====================================================================================
-COLUMNAS_METRICAS = [('rmse_lat', '{:.3f}'), ('rmse_yaw', '{:.3f}'), ('theta_max_deg', '{:.2f}'), ('s_smooth', '{:.4f}')]
+COLUMNAS_METRICAS = [('t_captura_s', '{:.1f}'), ('rmse_lat_seg', '{:.3f}'), ('rmse_yaw_seg', '{:.3f}'),
+                     ('theta_max_deg', '{:.2f}'), ('s_smooth', '{:.4f}'), ('distancia_final_m', '{:.2f}')]
 
 
 def _mejores(filas):
@@ -234,8 +299,8 @@ def _nombre_alg(clave, campo='nombre'):
 
 def tabla_markdown(filas):
     mejores = _mejores(filas)
-    lineas = ["| Trayectoria | Algoritmo | RMSE_lat [m] | RMSE_yaw [rad] | θ_max [°] | S_smooth [–] | Resultado | Duración [s] |",
-              "|---|---|---:|---:|---:|---:|---|---:|"]
+    lineas = ["| Trayectoria | Algoritmo | t_captura [s] | RMSE_lat seg. [m] | RMSE_yaw seg. [rad] | θ_max [°] | S_smooth [–] | Error final [m] | Resultado | Duración [s] |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---|---:|"]
     ruta_prev = None
     for f in filas:
         celdas = []
@@ -245,15 +310,22 @@ def tabla_markdown(filas):
             if (f['resultado'] == 'completada' and (f['ruta'], col) in mejores
                     and fmt.format(mejores[(f['ruta'], col)]) == txt):
                 txt = f"**{txt}**"
+            if col.endswith('_seg') and not f['capturada']:
+                txt += '*'
             celdas.append(txt)
         tray = ETIQUETA_RUTA_TXT.get(f['ruta'], f['ruta']) if f['ruta'] != ruta_prev else ''
         ruta_prev = f['ruta']
         lineas.append(f"| {tray} | {_nombre_alg(f['algoritmo'])} | " + " | ".join(celdas)
                       + f" | {RESULTADO_TXT.get(f['resultado'], f['resultado'])} | {f['duracion_s']:.1f} |")
     notas = ["", "En negrita, el mejor valor de cada trayectoria entre las corridas completadas.",
+             f"t_captura: tiempo hasta que el conjunto queda sobre la ruta (|x1| < {UMBRAL_CAPTURA_LAT_M} m "
+             f"durante {VENTANA_CAPTURA_S:.0f} s seguidos). "
+             "RMSE_lat/RMSE_yaw seg.: solo después de la captura. "
              "RMSE_lat: punto de control (tractor en marcha adelante, remolque en reversa). "
              "RMSE_yaw: error angular del remolque respecto de la tangente de la ruta. "
-             "S_smooth = 1/(N−1)·Σ|u_{k+1} − u_k|."]
+             "θ_max: toda la corrida. S_smooth = 1/(N−1)·Σ|u_{k+1} − u_k|. "
+             "Error final: distancia del punto de control al último punto de la ruta, ya detenido. "
+             "*: el conjunto nunca entró en la banda; métrica sobre toda la corrida."]
     if any(f['formato'] == 'anterior' for f in filas):
         notas.append("Las corridas en formato anterior usan el error angular propio de cada controlador; "
                      "repítalas con la telemetría actual para una comparación homogénea.")
@@ -270,8 +342,8 @@ def tabla_latex(filas):
            r"\begin{table}[htbp]", r"\centering", r"\small",
            r"\caption{Métricas cuantitativas de desempeño por trayectoria y algoritmo.}",
            r"\label{tab:metricas_cap5}",
-           r"\begin{tabular}{llrrrrl}", r"\toprule",
-           r"Trayectoria & Algoritmo & $RMSE_{lat}$ [m] & $RMSE_{yaw}$ [rad] & $\theta_{max}$ [$^\circ$] & $S_{smooth}$ & Resultado \\",
+           r"\begin{tabular}{llrrrrrrl}", r"\toprule",
+           r"Trayectoria & Algoritmo & $t_{cap}$ [s] & $RMSE_{lat}$ [m] & $RMSE_{yaw}$ [rad] & $\theta_{max}$ [$^\circ$] & $S_{smooth}$ & $e_{fin}$ [m] & Resultado \\",
            r"\midrule"]
     rutas_orden = []
     for f in filas:
@@ -287,6 +359,8 @@ def tabla_latex(filas):
                 if (f['resultado'] == 'completada' and (ruta, col) in mejores
                         and fmt.format(mejores[(ruta, col)]) == txt):
                     txt = r"\textbf{" + txt + "}"
+                if col.endswith('_seg') and not f['capturada']:
+                    txt += r"$^{*}$"
                 celdas.append(txt)
             tray = ETIQUETA_RUTA_TEX.get(ruta, ruta) if j == 0 else ''
             out.append(f"{tray} & {_nombre_alg(f['algoritmo'])} & " + " & ".join(celdas)
@@ -295,7 +369,9 @@ def tabla_latex(filas):
             out.append(r"\midrule")
     out += [r"\bottomrule", r"\end{tabular}",
             r"\par\smallskip\footnotesize En negrita, el mejor valor de cada trayectoria entre las corridas completadas. "
-            r"$S_{smooth} = \frac{1}{N-1}\sum_k |u_{k+1}-u_k|$.",
+            r"$t_{cap}$: duración de la fase de captura; $RMSE_{lat}$ y $RMSE_{yaw}$ se calculan solo durante el seguimiento. "
+            r"$S_{smooth} = \frac{1}{N-1}\sum_k |u_{k+1}-u_k|$. $e_{fin}$: distancia final al último punto de la ruta. "
+            r"$^{*}$: el conjunto nunca entró en la banda de captura; métrica sobre toda la corrida.",
             r"\end{table}"]
     return "\n".join(out) + "\n"
 

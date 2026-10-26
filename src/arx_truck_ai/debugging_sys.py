@@ -39,7 +39,8 @@ CSV_CABECERA = ['t', 'x_real', 'y_real', 'x_ref', 'y_ref',
                 'error_lateral', 'error_angular', 'delta_F2', 'steering',
                 'x_tractor', 'y_tractor', 'x_trailer', 'y_trailer', 'psi_tractor', 'psi_trailer', 'velocidad',
                 'error_lateral_tractor', 'error_lateral_trailer',
-                'error_lateral_ctrl', 'error_angular_ctrl', 'control_actualizado']
+                'error_lateral_ctrl', 'error_angular_ctrl', 'control_actualizado',
+                'volante_input', 'volante_real_deg']
 
 archivo_csv_activo = None
 _aviso_sin_csv_emitido = False
@@ -183,7 +184,8 @@ def registrar_muestra(t, sensores, steering, control_actualizado=True,
         return
     _fila_csv([t, float(real[0]), float(real[1]), x_ref, y_ref, lat, e_ang, delta, float(steering),
                float(tractor[0]), float(tractor[1]), float(trailer[0]), float(trailer[1]), psi_tractor, psi_trailer, v,
-               lat_tr, lat_rm, error_lateral_ctrl, error_angular_ctrl, int(bool(control_actualizado))])
+               lat_tr, lat_rm, error_lateral_ctrl, error_angular_ctrl, int(bool(control_actualizado)),
+               sensores.get('volante_input'), sensores.get('volante_real_deg')])
     _sesion['n'] = _sesion.get('n', 0) + 1
     if _sesion.get('t_ini') is None:
         _sesion['t_ini'] = t

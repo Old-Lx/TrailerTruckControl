@@ -9,13 +9,24 @@ import numpy as np
 
 # ---------------------------------------------------------------------------
 # Fin de ruta (ver fin_ruta.py). El punto que debe detenerse en el final es truck_pos.
-V_CRUCERO = 6.0          # m/s   velocidad de crucero
+V_CRUCERO = 2.0          # m/s   velocidad de crucero (la misma que en reversa, para comparar en el Cap. 5;
+                         #       hasta oct-2026 era 6.0)
 A_APROXIMACION = 0.6     # m/s²  desaceleración del perfil de llegada: v_obj = sqrt(2*a*d_restante)
 V_LLEGADA = 1.0          # m/s   velocidad mínima del perfil mientras quede ruta
 A_FRENADO = 2.0          # m/s²  desaceleración que se ASUME con freno a fondo (conservadora:
                          #       si el camión frena más fuerte, se detiene un poco antes del final)
 MARGEN_PARADA = 0.5      # m     margen extra antes del punto final
 # ---------------------------------------------------------------------------
+# Ley de dirección:
+#   'proporcional'  steering = -KP_STEER * eta                          (ley validada en BeamNG hasta oct-2026)
+#   'pure_pursuit'  delta = atan(2*L1*sin(eta)/L);  steering = -delta / PHI_MAX_RAD   (Pure Pursuit clásico)
+# eta es el ángulo entre el rumbo del tractor y la recta al punto objetivo; L la distancia a ese punto.
+# Para ángulos pequeños las dos son proporcionales a eta; con L = 12 m (lookahead a 2 m/s) la ganancia
+# equivalente de Pure Pursuit es 2*L1/(L*PHI_MAX) = 0.81, menor que KP_STEER = 1.2.
+LEY_DIRECCION = 'proporcional'
+KP_STEER = 1.2
+L1_TRACTOR = 2.93        # m    batalla efectiva del tractor (identificada, ver backwards_lqr.py)
+PHI_MAX_RAD = 0.6        # rad  ángulo de rueda con |steering| = 1 (supuesto, mismo que el LQR)
 
 def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, velocidad, ruta, current_idx, min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5):
     """
@@ -107,12 +118,15 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
         # Reducimos la agresividad del volante (hasta un 40% de su capacidad total) para evitar volcar.
         atenuacion_dinamica = np.clip(1.0 / exceso, 0.4, 1.0)
 
-    # Ganancia proporcional para la dirección
-    kp_steer = 1.2
-    # El simulador toma valores positivos de volante (steering > 0) para girar a la derecha. 
+    # El simulador toma valores positivos de volante (steering > 0) para girar a la derecha.
     # Un "yaw_error" positivo significa que el objetivo está a la izquierda (anti-horario),
     # por lo tanto, debemos invertir el signo del volante para girar correctamente.
-    steering = -kp_steer * yaw_error * atenuacion_dinamica
+    if LEY_DIRECCION == 'pure_pursuit':
+        L_objetivo = max(math.hypot(dx, dy), 1e-3)          # distancia real al punto objetivo
+        delta_rueda = math.atan(2.0 * L1_TRACTOR * math.sin(yaw_error) / L_objetivo)
+        steering = -(delta_rueda / PHI_MAX_RAD) * atenuacion_dinamica
+    else:
+        steering = -KP_STEER * yaw_error * atenuacion_dinamica
     # La máxima dirección de BeamNG entra en un rango de [-1, 1]
     steering = np.clip(steering, -1.0, 1.0)
 
@@ -160,10 +174,11 @@ def main():
                            tipo_ruta=tt.TIPO_RUTA, modo='sincrono' if tt.MODO_SINCRONO else 'libre',
                            frecuencia_simulacion=tt.FRECUENCIA_SIMULACION,
                            frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
-                           if tt.MODO_SINCRONO else None)
+                           if tt.MODO_SINCRONO else None,
+                           ley_direccion=LEY_DIRECCION, v_crucero=V_CRUCERO)
 
     # Estado del lazo
-    previous_truck_roll = 0.0
+    previous_truck_roll = None   # None: en el primer ciclo la tasa de roll es 0 (no se deriva contra 0)
     t0 = None                 # t = 0 en la primera muestra
     t_ultimo_control = None
     steering, throttle, brake = 0.0, 0.0, 0.0
@@ -193,7 +208,7 @@ def main():
             t_ultimo_control = t
 
             # Calcular la rotación/inercia de balanceo (tasa de roll)
-            truck_roll_rate = (truck_roll - previous_truck_roll) / dt
+            truck_roll_rate = 0.0 if previous_truck_roll is None else (truck_roll - previous_truck_roll) / dt
             previous_truck_roll = truck_roll
 
             # Control proporcional (Pure Pursuit) con lookahead dinámico y control amortiguado (Active Yaw)

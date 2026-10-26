@@ -1,5 +1,9 @@
 from beamngpy import BeamNGpy, Vehicle
 from beamngpy.sensors import AdvancedIMU, Camera, Lidar, State
+try:                                   # volante real (ángulo del volante) para la identificación y la telemetría
+    from beamngpy.sensors import Electrics
+except ImportError:
+    Electrics = None
 try:                                   # sensor de tiempo de simulación (no existe en todas las versiones)
     from beamngpy.sensors import Timer
 except ImportError:
@@ -38,6 +42,13 @@ MODO_SINCRONO = True
 FRECUENCIA_SIMULACION = 60     # Hz (bng.settings.set_deterministic)
 DECIMACION_CONTROL = 8         # pasos de simulación por actualización del control (solo modo síncrono)
 DURACION_MAXIMA_S = 300.0      # s de simulación: corte de seguridad si el experimento no termina
+
+# Instrumentación. Las IMU y los lidar quedan instalados (instrumentación disponible) pero no se leen:
+# ningún controlador usa sus datos y leerlos en cada ciclo solo agrega tiempo de comunicación.
+LEER_IMU_LIDAR = False
+# Sensor Electrics del camión: registra el comando de volante que recibió BeamNG y el ángulo real del
+# volante (en grados). Permite medir el retardo del actuador de dirección (identificación de la planta).
+REGISTRAR_VOLANTE_REAL = True
 
 # =====================================================================================
 # PROYECCIÓN DE LA RUTA EN LAS CÁMARAS Y PUNTO DE CONTROL
@@ -724,6 +735,11 @@ class TruckTrailer:
                 self.truck.attach_sensor('timer', Timer())
             except Exception as e:
                 print(f"[experimento] aviso: no se pudo adjuntar el sensor Timer ({type(e).__name__})")
+        if REGISTRAR_VOLANTE_REAL and Electrics is not None:
+            try:
+                self.truck.attach_sensor('electrics', Electrics())
+            except Exception as e:
+                print(f"[experimento] aviso: no se pudo adjuntar el sensor Electrics ({type(e).__name__})")
         self.truck.attach_sensor('state_truck', self.state_truck)
 
         # IMU para medir posición y orientación del camión
@@ -843,13 +859,12 @@ class TruckTrailer:
     def read_sensors(self, is_reverse=False, completo=True):
         """Lee el estado del conjunto. completo=False omite IMU, lidar y cámaras (no se usan en el
         control): es la lectura de los pasos intermedios del modo síncrono, solo para la telemetría."""
-        # Leer datos de los sensores
-        if completo:
-            truck_imu_data = self.imu_truck.poll() # Estos dos son el estado físico del sistema
-            trailer_imu_data = self.imu_trailer.poll()
-
-            lidar_front_data = self.lidar_front.poll()
-            lidar_rear_data = self.lidar_rear.poll()
+        # IMU y lidar: instalados pero sin uso en el control (ver LEER_IMU_LIDAR)
+        if completo and LEER_IMU_LIDAR:
+            self.imu_truck.poll()
+            self.imu_trailer.poll()
+            self.lidar_front.poll()
+            self.lidar_rear.poll()
 
         # Actualizar el estado físico de los vehículos (para leer el Yaw)
         self.truck.sensors.poll()
@@ -857,6 +872,15 @@ class TruckTrailer:
 
         estado_camion = self.truck.state
         estado_trailer = self.trailer.state
+
+        # Volante: comando recibido por BeamNG [-1, 1] y ángulo real del volante [grados] (None si no hay Electrics)
+        volante_input = volante_real_deg = None
+        try:
+            el = self.truck.sensors['electrics']
+            volante_input = el.get('steering_input')
+            volante_real_deg = el.get('steering')
+        except Exception:
+            pass
 
         dir_truck = estado_camion['dir']
         dir_trailer = estado_trailer['dir']
@@ -950,7 +974,9 @@ class TruckTrailer:
             "truck_roll": truck_roll,
             "trailer_pos": trailer_pos_final,  # en el eje longitudinal del tráiler (desfase medido)
             "trailer_dir": dir_trailer,
-            "trailer_roll": trailer_roll
+            "trailer_roll": trailer_roll,
+            "volante_input": volante_input,         # comando de volante que recibió BeamNG [-1, 1]
+            "volante_real_deg": volante_real_deg,   # ángulo real del volante [grados]
         }
         
         # Yaw del camión - Yaw del trailer = ángulo entre camión y trailer
