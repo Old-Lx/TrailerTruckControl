@@ -216,3 +216,5 @@ __marimo__/
 /ruta_*.csv
 /respuesta_sistema.png
 /figuras/
+/identificacion_planta.*
+/parametros_identificados.json

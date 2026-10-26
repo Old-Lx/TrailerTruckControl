@@ -44,6 +44,24 @@ cp .env.example .env      # y editar BNG_HOME / BNG_USER con la instalación loc
 Rutas disponibles: `0` recta ∥ X, `1` recta ∥ Y, `2` recta x = y, `3` parábola y = a·x²,
 `4` parábola x = a·y², `5` senoide y = A·sin(ωx), `6` senoide x = A·sin(ωy).
 
+### Opciones de los controladores
+
+En `src/main.py`: ley de dirección de marcha adelante (`proporcional` | `pure_pursuit`) y, para el LQR,
+prealimentación de curvatura, programación de ganancias en V y modo del integrador. Cada corrida guarda las
+opciones usadas en su `.json`. Para comparar variantes, córrelas en carpetas distintas y evalúa cada una con `--datos`.
+
+## Identificación de la planta
+
+```bash
+python src/experimento_identificacion.py                 # en BeamNG: maniobras en lazo abierto, marcha adelante
+python src/identificar_planta.py identificacion_planta.csv --salida figuras/cap3 \
+       --validar telemetria_lqr_recta_y.csv               # opcional: valida el modelo con una corrida en reversa
+```
+
+Identifica la dinámica del volante (retardo puro + primer orden), PHI/L1 del tractor, L2 y el desplazamiento
+del enganche del remolque, y la distancia DP del punto de control al eje del remolque. Escribe
+`parametros_identificados.json` y las figuras de comparación medido/modelo.
+
 ## Verificación sin BeamNG (solo para el software)
 
 `src/arx_truck_ai/arnes.py` reemplaza BeamNG por un modelo cinemático y ejecuta los `main()` reales de
@@ -60,12 +78,14 @@ python ../src/arx_truck_ai/arnes.py <forward|backward|lqr> <tipo_ruta 0..6>
 ```
 src/
   main.py                      lanzador de experimentos
-  evaluacion_resultados.py     métricas (RMSE lateral y angular, articulación máxima, suavidad), tablas y figuras
+  evaluacion_resultados.py     métricas (captura, RMSE lateral y angular, articulación máxima, suavidad), tablas y figuras
+  experimento_identificacion.py, identificar_planta.py   identificación de la planta en BeamNG
   arx_truck_ai/
     truck_trailer.py           escenario, sensores, calibración de cámaras, rutas, lectura del estado
     bng_open.py                arranque de BeamNG y del escenario
     forward.py, backward.py, backwards_lqr.py   controladores
     fin_ruta.py                fin de ruta común a los tres algoritmos
+    geometria_ruta.py          curvatura de la ruta (prealimentación del LQR)
     debugging_sys.py           telemetría (CSV/JSON) y figuras de apoyo
     arnes.py                   arnés de integración sin BeamNG
 matlab/modelaje.m              modelo nominal linealizado (figuras del Capítulo 3)

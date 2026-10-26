@@ -133,6 +133,9 @@ class _Sensores:
     def poll(self): pass
     def __getitem__(self, k):
         if k == 'timer': return {'time': self.planta.t}
+        if k == 'electrics':                   # sensor Electrics: comando y ángulo del volante (450° a tope)
+            return {'steering_input': self.planta.cmd['steering'],
+                    'steering': -self.planta.delta / DELTA_MAX * 450.0}
         raise KeyError(k)
 
 
@@ -213,8 +216,12 @@ sys.modules["arx_truck_ai.bng_open"] = bo; pkg.bng_open = bo
 _load("arx_truck_ai.fin_ruta", "fin_ruta.py")
 _load("arx_truck_ai.geometria_ruta", "geometria_ruta.py")
 _load("arx_truck_ai.debugging_sys", "debugging_sys.py")
-archivo = {"forward": "forward.py", "backward": "backward.py", "lqr": "backwards_lqr.py"}[algoritmo]
-mod = _load(f"arx_truck_ai.{os.path.splitext(archivo)[0]}", archivo)
+nombre_mod, archivo = {"forward": ("forward", "forward.py"), "backward": ("backward", "backward.py"),
+                       "lqr": ("backwards_lqr", "backwards_lqr.py"),
+                       # experimento de identificación de la planta (src/experimento_identificacion.py)
+                       "identificacion": ("experimento_identificacion", os.path.join("..", "experimento_identificacion.py")),
+                       }[algoritmo]
+mod = _load(f"arx_truck_ai.{nombre_mod}", archivo)
 
 # Ajustes opcionales NOMBRE=valor tras la ruta (p. ej. PREALIMENTACION_CURVATURA=False): se aplican al
 # módulo del algoritmo, o a truck_trailer si la constante es de ese módulo. Sirve para comparar variantes.
