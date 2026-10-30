@@ -135,60 +135,6 @@ def get_camera_intrinsics(fov_y_deg: float, width: int, height: int, fov_scale: 
     return K
 
 
-def _build_T_vc(cam_pos: tuple, cam_dir: tuple, cam_up: tuple) -> np.ndarray:
-    """Transformación homogénea cámara-en-vehículo.
-
-    Usa los ejes locales de la cámara definidos en el propio sensor (`dir`, `up`).
-    En BeamNG, `dir` apunta al frente de la cámara y `up` al techo del vehículo.
-    """
-
-    z_cam = np.array(cam_dir, dtype=np.float32)
-    z_cam /= np.linalg.norm(z_cam)
-
-    y_cam = np.array(cam_up, dtype=np.float32)
-    y_cam /= np.linalg.norm(y_cam)
-
-    x_cam = np.cross(y_cam, z_cam)
-    x_cam /= np.linalg.norm(x_cam)
-
-    # Re-ortonormalizamos Y para evitar drift numérico
-    y_cam = np.cross(z_cam, x_cam)
-    y_cam /= np.linalg.norm(y_cam)
-
-    T_vc = np.eye(4, dtype=np.float32)
-    T_vc[:3, :3] = np.column_stack((x_cam, y_cam, z_cam))
-    T_vc[:3, 3] = np.array(cam_pos, dtype=np.float32)
-    return T_vc
-
-
-def _build_T_wv(truck_state: dict) -> np.ndarray:
-    """Transformación homogénea vehículo-en-mundo usando `state` de BeamNG.
-
-    Tomamos la convención más simple: ejes locales del camión son
-    +X derecha, +Y frente, +Z arriba. `state['dir']` apunta al frente real del
-    vehículo en coordenadas globales, `state['up']` al techo; reconstruimos el eje
-    derecho con un cruzado. R_wv queda con columnas (right, forward, up).
-    """
-
-    forward_w = np.array(truck_state['dir'], dtype=np.float32)
-    forward_w /= np.linalg.norm(forward_w)
-
-    up_w = np.array(truck_state['up'], dtype=np.float32)
-    up_w /= np.linalg.norm(up_w)
-
-    right_w = np.cross(forward_w, up_w)
-    right_w /= np.linalg.norm(right_w)
-
-    # Re-ortonormaliza por estabilidad numérica
-    up_w = np.cross(right_w, forward_w)
-    up_w /= np.linalg.norm(up_w)
-
-    T_wv = np.eye(4, dtype=np.float32)
-    T_wv[:3, :3] = np.column_stack((right_w, forward_w, up_w))
-    T_wv[:3, 3] = np.array(truck_state['pos'], dtype=np.float32)
-    return T_wv
-
-
 def get_camera_extrinsics(truck_state: dict, cam_pos: tuple, cam_dir: tuple, cam_up: tuple, y_pivot_offset: float = 0.0):
     """Devuelve (rvec, tvec) usando la convención real de BeamNG para el vehículo.
 
