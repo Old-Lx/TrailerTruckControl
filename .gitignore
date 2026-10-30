@@ -218,3 +218,6 @@ __marimo__/
 /figuras/
 /identificacion_planta.*
 /parametros_identificados.json
+
+# Corridas de trabajo (los resultados de la tesis se copian a resultados/)
+/corridas/

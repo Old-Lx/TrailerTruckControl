@@ -12,6 +12,8 @@ evaluados en el simulador de física de cuerpos blandos **BeamNG.tech** mediante
 | Marcha atrás, control aditivo con histéresis anti-*jackknife* | `src/arx_truck_ai/backward.py` | remolque |
 | Marcha atrás, LQR con programación de ganancias | `src/arx_truck_ai/backwards_lqr.py` | remolque |
 
+> Guía detallada de instalación, entorno virtual y ejecución: [`docs/instrucciones.md`](docs/instrucciones.md).
+
 ## Requisitos
 
 - Windows con **BeamNG.tech v0.38.3** (licencia de investigación).
