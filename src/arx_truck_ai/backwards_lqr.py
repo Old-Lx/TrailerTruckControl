@@ -5,8 +5,9 @@ import scipy.linalg as la
 from arx_truck_ai.debugging_sys import (registrar_muestra, generar_grafico_evaluacion, inicializar_telemetria,
                                        finalizar_telemetria)
 from arx_truck_ai import truck_trailer as tt
+from arx_truck_ai import fin_ruta as fr
 from arx_truck_ai.fin_ruta import (distancia_restante, velocidad_limite_fin, debe_frenar,
-                                   indice_segmento, detener_en_fin)
+                                   indice_segmento, detener_en_fin, ControlVelocidad)
 from arx_truck_ai.geometria_ruta import curvatura_adelante
 
 # ---------------------------------------------------------------------------
@@ -16,6 +17,7 @@ A_APROXIMACION = 0.3     # m/s²  desaceleración del perfil de llegada: v_obj =
 V_LLEGADA = 0.5          # m/s   velocidad mínima del perfil mientras quede ruta
 A_FRENADO = 1.5          # m/s²  desaceleración que se ASUME con freno a fondo (conservadora)
 MARGEN_PARADA = 0.3      # m     margen extra antes del punto final
+KP_VELOCIDAD = 0.4       # ganancia proporcional del control de velocidad (fin_ruta.ControlVelocidad)
 # ---------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------
@@ -239,7 +241,7 @@ def estado_regimen_curva(kappa):
 
 def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, trailer_roll, trailer_roll_rate,
                         velocidad, ruta, current_idx, dt, integrador_error, x_hat, previous_steering,
-                        tabla_ganancias=None):
+                        tabla_ganancias=None, ctrl_vel=None):
     """
     Control LQR por realimentación de estados con programación de ganancias sobre |delta_F2| (y |v|),
     con prealimentación de curvatura opcional (ver MEJORAS DE OCT-2026).
@@ -381,14 +383,10 @@ def control_lqr_reversa(pos_trailer, psi_trailer, delta_F2, trailer_roll, traile
     # Bucle de velocidad básico, con perfil de llegada: cerca del final la velocidad objetivo baja
     # como sqrt(2*a*d_restante) para llegar despacio al punto final.
     velocidad_objetivo = min(V_CRUCERO, velocidad_limite_fin(d_restante, A_APROXIMACION, V_LLEGADA)) * atenuacion_dinamica
-    error_vel = velocidad_objetivo - velocidad
-    kp_vel = 0.4
-    if error_vel > 0:
-        throttle = np.clip(0.1 + kp_vel * error_vel, 0.0, 1.0)
-        brake = 0.0
-    else:
-        throttle = 0.0
-        brake = np.clip(-kp_vel * error_vel * 0.5, 0.0, 1.0)
+    # Control de velocidad común (fin_ruta.ControlVelocidad: PI o la ley 'original')
+    if ctrl_vel is None:
+        ctrl_vel = ControlVelocidad(KP_VELOCIDAD, V_CRUCERO, modo='original')
+    throttle, brake = ctrl_vel(velocidad_objetivo, velocidad, dt)
 
     # Fin de ruta: frenar a fondo cuando la distancia de parada alcanza a la que queda (o si ya se pasó).
     if debe_frenar(d_restante, velocidad, A_FRENADO, MARGEN_PARADA):
@@ -436,11 +434,13 @@ def main():
                            frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
                            if tt.MODO_SINCRONO else None,
                            prealimentacion_curvatura=PREALIMENTACION_CURVATURA,
-                           programacion_en_v=PROGRAMACION_EN_V, modo_integrador=MODO_INTEGRADOR)
+                           programacion_en_v=PROGRAMACION_EN_V, modo_integrador=MODO_INTEGRADOR,
+                           control_velocidad=fr.MODO_CONTROL_VELOCIDAD)
 
     t0 = None
     t_ultimo_control = None
     steering, throttle, brake = 0.0, 0.0, 0.0
+    ctrl_vel = ControlVelocidad(KP_VELOCIDAD, V_CRUCERO)
     x1 = x2 = None
     finished = False
     resultado, info_fin = 'completada', {}
@@ -480,7 +480,7 @@ def main():
             steering, throttle, brake, current_idx, finished, integrador_error, x_hat, x1, x2, x3, s_raw = control_lqr_reversa(
                 pos_trailer, psi_trailer, delta_F2, trailer_roll, trailer_roll_rate,
                 velocidad, route_points, current_idx, dt, integrador_error, x_hat, previous_steering=previous_steering,
-                tabla_ganancias=tabla_ganancias
+                tabla_ganancias=tabla_ganancias, ctrl_vel=ctrl_vel
             )
             truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0, gear=-1)
             previous_steering = steering
@@ -489,7 +489,8 @@ def main():
         # ruta es un comando de frenado, no una muestra de seguimiento.
         if not finished:
             registrar_muestra(t_rel, sensores, steering, control_actualizado=es_ciclo_control,
-                              error_lateral_ctrl=x1, error_angular_ctrl=x2)
+                              error_lateral_ctrl=x1, error_angular_ctrl=x2,
+                              throttle=throttle, brake=brake)
 
         if finished:
             print("Fin de ruta (LQR): frenando hasta detener el conjunto...")

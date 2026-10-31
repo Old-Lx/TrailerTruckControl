@@ -68,7 +68,7 @@ OFFSET_LATERAL_TRUCK_DEFECTO = 0.0       # m (+ = hacia la izquierda del vehícu
 OFFSET_LATERAL_TRAILER_DEFECTO = 0.949   # m  valor que se usaba fijo hasta ahora en read_sensors()
 OFFSET_LATERAL_MAXIMO = 1.5              # m  una medición mayor se descarta por inverosímil
 FOV_SCALE = 0.98                         # ajuste fino de focal (ver verificación en el reporte de calibración)
-DIBUJAR_RUTA_EN_MUNDO = True             # además, traza la ruta en el mundo 3D de BeamNG (referencia visual)
+DIBUJAR_RUTA_EN_MUNDO = False             # además, traza la ruta en el mundo 3D de BeamNG (referencia visual)
 COLOR_RUTA_MUNDO = (1.0, 0.0, 1.0, 0.8)  # RGBA de esa línea (magenta, para distinguirla del overlay verde)
 DIBUJAR_EJE_VEHICULO = True              # dibuja en la cámara el eje longitudinal del vehículo (línea blanca fina):
                                          # con el vehículo centrado sobre la ruta, verde y blanca coinciden
@@ -483,6 +483,13 @@ class TruckTrailer:
             self.truck.control(gear=gear)
         if not MODO_SINCRONO:
             self.bng.control.resume()
+        else:
+            # Cebado: un paso y una lectura antes de la primera muestra. En la corrida del 30-oct-2026 la
+            # primera lectura del Timer venía atrasada 16 pasos respecto de la segunda (primer dt de 0.27 s
+            # en vez de 1/60 s); así la primera muestra ya se lee con la simulación determinista en marcha.
+            self.avanzar(1)
+            self.truck.sensors.poll()
+            self.trailer.sensors.poll()
         modo = (f"SÍNCRONO: registro a {FRECUENCIA_SIMULACION} Hz, control a "
                 f"{FRECUENCIA_SIMULACION / self.decimacion_control:.1f} Hz" if MODO_SINCRONO else "LIBRE (tiempo real)")
         print(f"[experimento] ruta '{self.nombre_ruta}' (TIPO_RUTA={TIPO_RUTA}) | modo {modo}")

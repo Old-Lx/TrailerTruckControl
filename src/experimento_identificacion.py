@@ -20,8 +20,10 @@ import time
 
 from arx_truck_ai import bng_open
 from arx_truck_ai import truck_trailer as tt
+from arx_truck_ai import fin_ruta as fr
 
 V_OBJETIVO = 2.0             # m/s
+KP_VELOCIDAD = 0.5           # control de velocidad común (fin_ruta.ControlVelocidad), como en forward.py
 ARTICULACION_MAXIMA = 1.0    # rad: corte de seguridad
 ARCHIVO = 'identificacion_planta.csv'
 
@@ -41,7 +43,7 @@ SECUENCIA = [
 
 CABECERA = ['t', 'steering_cmd', 'volante_input', 'volante_real_deg', 'velocidad',
             'psi_tractor', 'psi_trailer', 'delta_F2',
-            'x_tractor', 'y_tractor', 'x_trailer', 'y_trailer']
+            'x_tractor', 'y_tractor', 'x_trailer', 'y_trailer', 'throttle', 'brake']
 
 
 def volante_programado(t):
@@ -60,6 +62,7 @@ def main():
     filas = []
     resultado = 'completado'
     t0 = None
+    ctrl_vel = fr.ControlVelocidad(KP_VELOCIDAD, V_OBJETIVO)
     while True:
         s = truck_trailer.read_sensors(completo=False)
         t0 = s['t_sim'] if t0 is None else t0
@@ -70,13 +73,12 @@ def main():
         if abs(s['delta_F2']) > ARTICULACION_MAXIMA:
             resultado = 'corte_por_articulacion'
             break
-        error_v = V_OBJETIVO - s['v1']
-        throttle = min(max(0.1 + 0.5 * error_v, 0.0), 1.0) if error_v > 0 else 0.0
-        brake = min(max(-0.25 * error_v, 0.0), 1.0) if error_v <= 0 else 0.0
+        throttle, brake = ctrl_vel(V_OBJETIVO, s['v1'], 1.0 / tt.FRECUENCIA_SIMULACION)
         truck_trailer.truck.control(steering=cmd, throttle=throttle, brake=brake, parkingbrake=0)
         filas.append([t, cmd, s.get('volante_input'), s.get('volante_real_deg'), s['v1'],
                       s['psi_truck'], s['psi_trailer'], s['delta_F2'],
-                      s['truck_pos'][0], s['truck_pos'][1], s['trailer_pos'][0], s['trailer_pos'][1]])
+                      s['truck_pos'][0], s['truck_pos'][1], s['trailer_pos'][0], s['trailer_pos'][1],
+                      throttle, brake])
         truck_trailer.avanzar()      # modo síncrono: un paso de 1/60 s
 
     truck_trailer.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=1, gear=0)
@@ -87,7 +89,7 @@ def main():
             w.writerow(['' if v is None else v for v in fila])
     meta = dict(resultado=resultado, muestras=len(filas), v_objetivo=V_OBJETIVO, sentido=+1,
                 modo='sincrono' if tt.MODO_SINCRONO else 'libre', frecuencia_simulacion=tt.FRECUENCIA_SIMULACION,
-                secuencia=SECUENCIA, fecha=time.strftime('%Y-%m-%d %H:%M:%S'))
+                secuencia=SECUENCIA, control_velocidad=fr.MODO_CONTROL_VELOCIDAD, fecha=time.strftime('%Y-%m-%d %H:%M:%S'))
     with open(ARCHIVO.replace('.csv', '.json'), 'w', encoding='utf-8') as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
     print(f"[identificación] {ARCHIVO}: {len(filas)} muestras, resultado: {resultado}")

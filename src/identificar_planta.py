@@ -2,9 +2,14 @@
 identificar_planta.py - Identificación de los parámetros de la planta a partir de identificacion_planta.csv.
 
 Modelo (cinemático, sin deslizamiento; theta = psi_tractor - psi_remolque, v = velocidad del tractor):
-  Actuador de dirección   s_real(t) = G * [retardo puro d] -> [primer orden tau] de s_cmd(t)
-                          (s_real: ángulo del volante del sensor Electrics, en grados; G en grados por unidad)
-  Tractor                 psi1_dot = v * k * s_act,  k = PHI/L1   (s_act = s_real/G, volante real normalizado)
+  Volante de la cabina    s_real(t) = G * [retardo puro d] -> [primer orden tau] de s_cmd(t)
+                          (s_real: ángulo del volante del sensor Electrics, en grados; G en grados por unidad).
+                          En BeamNG es -900°/unidad con UN cuadro de retraso (corrida del 30-oct-2026): copia el
+                          comando y NO incluye la dinámica de las ruedas ni de los neumáticos.
+  Tractor                 psi1_dot = v * k * [retardo puro d] -> [primer orden tau] de s_cmd(t),  k = PHI/L1
+                          d y tau se buscan en rejilla y k por mínimos cuadrados: es el retardo EFECTIVO entre
+                          el comando y el giro del tractor, el que modela x5 en el LQR. (También se reporta el
+                          ajuste con el volante de la cabina como entrada, para comparar.)
   Remolque (enganche      psi2_dot = (v*sin(theta) - M*psi1_dot*cos(theta)) / L2
   desplazado M detrás del eje trasero del tractor; M = 0 es la hipótesis "on-axle" del Capítulo 1)
   Punto medido            v_lat = DP * psi2_dot   (velocidad lateral del punto de control del remolque,
@@ -71,6 +76,24 @@ def identificar_actuador(t, cmd, real, dt):
                 r2=r2(real, G * primer_orden(cmd, dt, tau, retardo)))
 
 
+def identificar_giro(cmd, v, psi1_d, mov, dt):
+    """Retardo efectivo del volante visto en el giro del tractor: psi1_dot = v*k*[retardo + primer orden](cmd)."""
+    y = psi1_d[mov]
+    mejor = None
+    for retardo in np.arange(0.0, 1.0 + 1e-9, dt):
+        for tau in np.arange(0.02, 1.5, 0.02):
+            X = (v * primer_orden(cmd, dt, tau, retardo))[mov]
+            xx = float(np.dot(X, X))
+            if xx <= 0:
+                continue
+            k = float(np.dot(X, y) / xx)
+            e = float(np.mean((y - k * X) ** 2))
+            if mejor is None or e < mejor[0]:
+                mejor = (e, retardo, tau, k)
+    _, retardo, tau, k = mejor
+    return k, float(retardo), float(tau)
+
+
 def cargar(archivo):
     df = pd.read_csv(archivo)
     df = df.dropna(subset=['t']).sort_values('t').reset_index(drop=True)
@@ -90,24 +113,32 @@ def identificar(df):
     res = dict(muestras=int(len(df)), dt_s=dt)
     figs = {}
 
-    # 1) Actuador
+    # 1) Volante de la cabina (sensor Electrics)
     real = df['volante_real_deg'].to_numpy(float) if 'volante_real_deg' in df else np.full(len(df), np.nan)
+    s_act = None
     if np.isfinite(real).mean() > 0.9:
         act = identificar_actuador(t, cmd, np.nan_to_num(real), dt)
+        act['nota'] = ("ángulo del volante de la cabina; si el retardo es ~1 cuadro, el sensor solo copia el "
+                       "comando y la dinámica real del volante está en el ajuste del tractor")
         s_act = np.nan_to_num(real) / act['ganancia_grados']
         res['actuador'] = act
         figs['actuador'] = (t, cmd, real / act['ganancia_grados'],
                             primer_orden(cmd, dt, act['tau_s'], act['retardo_puro_s']))
     else:
-        res['actuador'] = None              # sin sensor Electrics: se usa el comando (incluye el retardo en k)
-        s_act = cmd
+        res['actuador'] = None              # sin sensor Electrics
 
-    # 2) Tractor: psi1_dot = v*k*s_act
-    X = (v * s_act)[mov]
-    k = float(np.dot(X, psi1_d[mov]) / np.dot(X, X))
+    # 2) Tractor: psi1_dot = v*k*[retardo + primer orden](cmd)  (retardo efectivo comando -> giro)
+    k, retardo, tau = identificar_giro(cmd, v, psi1_d, mov, dt)
+    X = (v * primer_orden(cmd, dt, tau, retardo))[mov]
     res['tractor'] = dict(k_phi_sobre_L1=k, L1_equivalente_m=PHI_MAX_SUPUESTO / abs(k) if k else float('nan'),
-                          nota=f"L1 equivalente suponiendo PHI_MAX = {PHI_MAX_SUPUESTO} rad (solo PHI/L1 es identificable)",
+                          retardo_puro_s=retardo, tau_s=tau, retardo_equivalente_s=retardo + tau,
+                          nota=f"L1 equivalente suponiendo PHI_MAX = {PHI_MAX_SUPUESTO} rad (solo PHI/L1 es "
+                               "identificable); retardo y tau: del comando al giro del tractor (x5 del LQR)",
                           r2=r2(psi1_d[mov], k * X))
+    if s_act is not None:                   # comparación: el volante de la cabina como entrada, sin retardo extra
+        Xc = (v * s_act)[mov]
+        kc = float(np.dot(Xc, psi1_d[mov]) / np.dot(Xc, Xc))
+        res['tractor'].update(k_con_volante_cabina=kc, r2_con_volante_cabina=r2(psi1_d[mov], kc * Xc))
     figs['tractor'] = (t[mov], psi1_d[mov], k * X)
 
     # 3) Remolque: psi2_dot = a*(v sin theta) + b*(psi1_dot cos theta);  L2 = 1/a, M = -b/a
@@ -162,7 +193,7 @@ def figuras(figs, salida, formatos, validacion=None):
         ax.plot(t, cmd, lw=1, label='Comando')
         ax.plot(t, real, lw=1.2, label='Volante real (normalizado)')
         ax.plot(t, mod, '--', lw=1, label='Modelo: retardo + primer orden')
-        ax.set_xlabel('t [s]'); ax.set_ylabel('Volante [-1, 1]'); ax.legend(); ax.grid(alpha=.3)
+        ax.set_xlabel('t [s]'); ax.set_ylabel('Volante de la cabina [-1, 1]'); ax.legend(); ax.grid(alpha=.3)
         guardar(fig, 'identificacion_actuador')
     for clave, ylabel in (('tractor', r'$\dot\psi_1$ [rad/s]'), ('remolque', r'$\dot\psi_2$ [rad/s]')):
         t, med, mod = figs[clave]
@@ -213,12 +244,17 @@ def main(argv=None):
     act, tr, rm, pm = res['actuador'], res['tractor'], res['remolque'], res['punto_medido']
     print("PARÁMETROS IDENTIFICADOS")
     if act:
-        print(f"  actuador : retardo puro {act['retardo_puro_s']:.2f} s + primer orden tau {act['tau_s']:.2f} s "
-              f"(equivalente {act['retardo_equivalente_s']:.2f} s), G = {act['ganancia_grados']:.1f}°/unidad, R² = {act['r2']:.3f}")
+        print(f"  volante de la cabina (Electrics): retardo puro {act['retardo_puro_s']:.3f} s + primer orden tau "
+              f"{act['tau_s']:.2f} s, G = {act['ganancia_grados']:.1f}°/unidad, R² = {act['r2']:.3f}")
     else:
-        print("  actuador : sin datos del volante real (sensor Electrics); no identificado")
+        print("  volante de la cabina: sin datos del sensor Electrics")
     print(f"  tractor  : PHI/L1 = {tr['k_phi_sobre_L1']:.4f} 1/m  (L1 = {tr['L1_equivalente_m']:.2f} m con PHI = "
           f"{PHI_MAX_SUPUESTO} rad), R² = {tr['r2']:.3f}")
+    print(f"             retardo efectivo comando -> giro: puro {tr['retardo_puro_s']:.2f} s + primer orden tau "
+          f"{tr['tau_s']:.2f} s (equivalente {tr['retardo_equivalente_s']:.2f} s)")
+    if 'r2_con_volante_cabina' in tr:
+        print(f"             con el volante de la cabina como entrada: PHI/L1 = {tr['k_con_volante_cabina']:.4f}, "
+              f"R² = {tr['r2_con_volante_cabina']:.3f}")
     print(f"  remolque : L2 = {rm['L2_m']:.2f} m, desplazamiento del enganche M = {rm['M_enganche_m']:+.2f} m, "
           f"R² = {rm['r2']:.3f}  (on-axle: L2 = {rm['L2_on_axle_m']:.2f} m, R² = {rm['r2_on_axle']:.3f})")
     print(f"  punto    : DP = {pm['DP_m']:.2f} m, R² = {pm['r2']:.3f}")

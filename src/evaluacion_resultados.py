@@ -41,6 +41,9 @@ seguir la ruta (SEGUIMIENTO). Para no mezclar ambas cosas en un solo RMSE:
     t_captura    duración de la captura [s];  d_captura: distancia recorrida por el punto de control [m];
                  theta_max_captura: articulación máxima durante la captura [°].
     RMSE_lat_seg, RMSE_yaw_seg, theta_max_seg: las mismas métricas solo sobre el seguimiento.
+    t_asent      tiempo de asentamiento: igual que t_captura pero con la banda fina UMBRAL_ASENTAMIENTO_M
+                 (5 cm). Mide la convergencia cuando la corrida empieza cerca de la ruta (p. ej. recta_x
+                 arranca con ~0.4 m de error lateral, dentro de la banda de captura: t_captura = 0).
     Si la corrida nunca entra en la banda (p. ej. un controlador que recorta las curvas de la senoide más de
     0.5 m), t_captura queda vacío (NaN) y las métricas de "seguimiento" se calculan sobre toda la corrida
     (columna capturada = False; en las tablas se marcan con *).
@@ -65,7 +68,7 @@ import pandas as pd
 # Algoritmos: clave del archivo, nombre para tablas y figuras, color (paleta categorical validada para
 # daltonismo, slots 1-3) y estilo de línea (codificación secundaria: legible también impreso en gris).
 ALGORITMOS = [
-    dict(clave='forward',  nombre='Forward (Pure Pursuit)', corto='Forward',
+    dict(clave='forward',  nombre='Forward', corto='Forward',
          color='#2a78d6', estilo='-'),
     dict(clave='backward', nombre='Backward (Aditivo)',     corto='Aditivo',
          color='#eb6834', estilo='--'),
@@ -107,9 +110,13 @@ RESULTADO_TXT = {'completada': 'Completada', 'jackknife': 'Jackknife', 'tiempo_m
 UMBRAL_PANICO_RAD = 0.42      # límite duro de pánico del controlador aditivo
 UMBRAL_JACKKNIFE_RAD = 1.0    # corte por jackknife en backward.py / backwards_lqr.py
 
-# Fin de la fase de captura (ver docstring)
+# Fin de la fase de captura y asentamiento (ver docstring)
 UMBRAL_CAPTURA_LAT_M = 0.5
 VENTANA_CAPTURA_S = 3.0
+UMBRAL_ASENTAMIENTO_M = 0.05
+
+# Ley de dirección de marcha adelante (metadato 'ley_direccion' del JSON) -> nombre en tablas y figuras
+NOMBRE_LEY_FORWARD = {'proporcional': 'Forward (proporcional)', 'pure_pursuit': 'Forward (Pure Pursuit)'}
 
 # Estilo (figuras de tesis)
 TINTA = '#0b0b0b'             # texto principal
@@ -153,6 +160,13 @@ class Corrida:
 
     def xy_control(self):
         return self.df['x_real'].to_numpy(), self.df['y_real'].to_numpy()
+
+    @property
+    def nombre(self):
+        """Nombre del algoritmo para tablas y figuras (en marcha adelante, según la ley usada)."""
+        if self.algoritmo == 'forward':
+            return NOMBRE_LEY_FORWARD.get(self.meta.get('ley_direccion'), _nombre_alg('forward'))
+        return _nombre_alg(self.algoritmo)
 
 
 def _leer_json(ruta_json):
@@ -216,9 +230,10 @@ def _num(v):
     return float(v) if v is not None else float('nan')
 
 
-def indice_fin_captura(t, e_lat):
-    """Índice de la primera muestra desde la cual el conjunto queda alineado (ver docstring); None si nunca."""
-    ok = np.abs(e_lat) < UMBRAL_CAPTURA_LAT_M
+def indice_fin_captura(t, e_lat, banda=UMBRAL_CAPTURA_LAT_M):
+    """Índice de la primera muestra desde la cual |e_lat| < banda durante VENTANA_CAPTURA_S (ver docstring);
+    None si nunca."""
+    ok = np.abs(e_lat) < banda
     inicio = None
     for i in range(len(t)):
         if ok[i]:
@@ -239,6 +254,7 @@ def calcular_metricas(c):
     delta_deg = np.abs(df['delta_F2'].to_numpy(dtype=float)) * 180.0 / math.pi
     x, y = c.xy_control()
     i_cap = indice_fin_captura(t, e_lat)
+    i_asent = indice_fin_captura(t, e_lat, UMBRAL_ASENTAMIENTO_M)
     if i_cap is None:
         t_cap = d_cap = th_cap = float('nan')
         rmse_lat_seg, rmse_yaw_seg, th_seg = rmse(e_lat), rmse(e_ang), float(np.nanmax(delta_deg))
@@ -250,8 +266,9 @@ def calcular_metricas(c):
         rmse_yaw_seg = rmse(e_ang[i_cap:])
         th_seg = float(np.nanmax(delta_deg[i_cap:]))
     return dict(
-        algoritmo=c.algoritmo, ruta=c.ruta,
+        algoritmo=c.algoritmo, ruta=c.ruta, nombre=c.nombre,
         t_captura_s=t_cap,
+        t_asent_s=float(t[i_asent] - t[0]) if i_asent is not None else float('nan'),
         capturada=i_cap is not None,
         rmse_lat_seg=rmse_lat_seg,
         rmse_yaw_seg=rmse_yaw_seg,
@@ -276,7 +293,7 @@ def calcular_metricas(c):
 # =====================================================================================
 # TABLAS
 # =====================================================================================
-COLUMNAS_METRICAS = [('t_captura_s', '{:.1f}'), ('rmse_lat_seg', '{:.3f}'), ('rmse_yaw_seg', '{:.3f}'),
+COLUMNAS_METRICAS = [('t_captura_s', '{:.1f}'), ('t_asent_s', '{:.1f}'), ('rmse_lat_seg', '{:.3f}'), ('rmse_yaw_seg', '{:.3f}'),
                      ('theta_max_deg', '{:.2f}'), ('s_smooth', '{:.4f}'), ('distancia_final_m', '{:.2f}')]
 
 
@@ -299,8 +316,8 @@ def _nombre_alg(clave, campo='nombre'):
 
 def tabla_markdown(filas):
     mejores = _mejores(filas)
-    lineas = ["| Trayectoria | Algoritmo | t_captura [s] | RMSE_lat seg. [m] | RMSE_yaw seg. [rad] | θ_max [°] | S_smooth [–] | Error final [m] | Resultado | Duración [s] |",
-              "|---|---|---:|---:|---:|---:|---:|---:|---|---:|"]
+    lineas = ["| Trayectoria | Algoritmo | t_captura [s] | t_asent [s] | RMSE_lat seg. [m] | RMSE_yaw seg. [rad] | θ_max [°] | S_smooth [–] | Error final [m] | Resultado | Duración [s] |",
+              "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|"]
     ruta_prev = None
     for f in filas:
         celdas = []
@@ -315,11 +332,12 @@ def tabla_markdown(filas):
             celdas.append(txt)
         tray = ETIQUETA_RUTA_TXT.get(f['ruta'], f['ruta']) if f['ruta'] != ruta_prev else ''
         ruta_prev = f['ruta']
-        lineas.append(f"| {tray} | {_nombre_alg(f['algoritmo'])} | " + " | ".join(celdas)
+        lineas.append(f"| {tray} | {f['nombre']} | " + " | ".join(celdas)
                       + f" | {RESULTADO_TXT.get(f['resultado'], f['resultado'])} | {f['duracion_s']:.1f} |")
     notas = ["", "En negrita, el mejor valor de cada trayectoria entre las corridas completadas.",
              f"t_captura: tiempo hasta que el conjunto queda sobre la ruta (|x1| < {UMBRAL_CAPTURA_LAT_M} m "
              f"durante {VENTANA_CAPTURA_S:.0f} s seguidos). "
+             f"t_asent: lo mismo con |x1| < {UMBRAL_ASENTAMIENTO_M} m (—: nunca). "
              "RMSE_lat/RMSE_yaw seg.: solo después de la captura. "
              "RMSE_lat: punto de control (tractor en marcha adelante, remolque en reversa). "
              "RMSE_yaw: error angular del remolque respecto de la tangente de la ruta. "
@@ -342,8 +360,8 @@ def tabla_latex(filas):
            r"\begin{table}[htbp]", r"\centering", r"\small",
            r"\caption{Métricas cuantitativas de desempeño por trayectoria y algoritmo.}",
            r"\label{tab:metricas_cap5}",
-           r"\begin{tabular}{llrrrrrrl}", r"\toprule",
-           r"Trayectoria & Algoritmo & $t_{cap}$ [s] & $RMSE_{lat}$ [m] & $RMSE_{yaw}$ [rad] & $\theta_{max}$ [$^\circ$] & $S_{smooth}$ & $e_{fin}$ [m] & Resultado \\",
+           r"\begin{tabular}{llrrrrrrrl}", r"\toprule",
+           r"Trayectoria & Algoritmo & $t_{cap}$ [s] & $t_{as}$ [s] & $RMSE_{lat}$ [m] & $RMSE_{yaw}$ [rad] & $\theta_{max}$ [$^\circ$] & $S_{smooth}$ & $e_{fin}$ [m] & Resultado \\",
            r"\midrule"]
     rutas_orden = []
     for f in filas:
@@ -363,13 +381,13 @@ def tabla_latex(filas):
                     txt += r"$^{*}$"
                 celdas.append(txt)
             tray = ETIQUETA_RUTA_TEX.get(ruta, ruta) if j == 0 else ''
-            out.append(f"{tray} & {_nombre_alg(f['algoritmo'])} & " + " & ".join(celdas)
+            out.append(f"{tray} & {f['nombre']} & " + " & ".join(celdas)
                        + f" & {RESULTADO_TXT.get(f['resultado'], f['resultado'])} \\\\")
         if i < len(rutas_orden) - 1:
             out.append(r"\midrule")
     out += [r"\bottomrule", r"\end{tabular}",
             r"\par\smallskip\footnotesize En negrita, el mejor valor de cada trayectoria entre las corridas completadas. "
-            r"$t_{cap}$: duración de la fase de captura; $RMSE_{lat}$ y $RMSE_{yaw}$ se calculan solo durante el seguimiento. "
+            r"$t_{cap}$: duración de la fase de captura; $t_{as}$: tiempo hasta quedar a menos de 5 cm de la ruta; $RMSE_{lat}$ y $RMSE_{yaw}$ se calculan solo durante el seguimiento. "
             r"$S_{smooth} = \frac{1}{N-1}\sum_k |u_{k+1}-u_k|$. $e_{fin}$: distancia final al último punto de la ruta. "
             r"$^{*}$: el conjunto nunca entró en la banda de captura; métrica sobre toda la corrida.",
             r"\end{table}"]
@@ -389,13 +407,16 @@ def _guardar(fig, salida, nombre, formatos, dpi):
     return rutas
 
 
-def _manejadores_leyenda(algoritmos_presentes, hay_jackknife, con_ruta=True):
+def _manejadores_leyenda(algoritmos_presentes, hay_jackknife, con_ruta=True, nombres=None):
+    """nombres: {clave: nombre} de las corridas presentes (p. ej. la ley de marcha adelante usada)."""
+    nombres = nombres or {}
     h = []
     if con_ruta:
         h.append(Line2D([], [], color=RUTA_COLOR, lw=5, solid_capstyle='round', label='Ruta de referencia'))
     for a in ALGORITMOS:
         if a['clave'] in algoritmos_presentes:
-            h.append(Line2D([], [], color=a['color'], ls=a['estilo'], lw=1.6, label=a['nombre']))
+            h.append(Line2D([], [], color=a['color'], ls=a['estilo'], lw=1.6,
+                            label=nombres.get(a['clave'], a['nombre'])))
     if con_ruta:
         h.append(Line2D([], [], color=TINTA_2, marker='o', ls='none', ms=6, mfc='white', label='Inicio de la ruta'))
         h.append(Line2D([], [], color=TINTA_2, marker='s', ls='none', ms=6, label='Fin de la ruta'))
@@ -415,7 +436,7 @@ def figura_trayectorias(familia, carpeta, salida, formatos, dpi, max_aspecto_iso
 
     n = len(rutas)
     fig, axes = plt.subplots(1, n, figsize=(3.3 * n, 3.9), squeeze=False)
-    algoritmos_presentes, hay_jk = set(), False
+    algoritmos_presentes, hay_jk, nombres = set(), False, {}
     for ax, ruta in zip(axes[0], rutas):
         corr = datos[ruta]
         xr, yr, completa = cargar_ruta_referencia(carpeta, ruta, corr.values())
@@ -432,6 +453,7 @@ def figura_trayectorias(familia, carpeta, salida, formatos, dpi, max_aspecto_iso
                 vacias.append(a['corto'])
                 continue
             algoritmos_presentes.add(a['clave'])
+            nombres[a['clave']] = c.nombre
             x, y = c.xy_control()
             ax.plot(x, y, color=a['color'], ls=a['estilo'], lw=1.5, zorder=3)
             xs.append(x); ys.append(y)
@@ -468,7 +490,7 @@ def figura_trayectorias(familia, carpeta, salida, formatos, dpi, max_aspecto_iso
                     fontsize=7.5, color=TINTA_2, va='top')
     fig.suptitle(f"Seguimiento de trayectoria en el plano XY: {info['titulo']}", color=TINTA)
     fig.tight_layout(rect=(0, 0.13, 1, 1))
-    fig.legend(handles=_manejadores_leyenda(algoritmos_presentes, hay_jk), loc='lower center',
+    fig.legend(handles=_manejadores_leyenda(algoritmos_presentes, hay_jk, nombres=nombres), loc='lower center',
                bbox_to_anchor=(0.5, 0.0), ncol=4, frameon=False)
     return _guardar(fig, salida, f"trayectoria_{familia}_xy", formatos, dpi)
 
@@ -481,12 +503,13 @@ def figura_temporal(ruta, carpeta, salida, formatos, dpi, unidad='deg'):
     k = 180.0 / math.pi if unidad == 'deg' else 1.0
     u_txt = '[°]' if unidad == 'deg' else '[rad]'
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(7.0, 6.6), sharex=True)
-    presentes, hay_jk = set(), False
+    presentes, hay_jk, nombres = set(), False, {}
     for a in ALGORITMOS:
         c = corr[a['clave']]
         if c is None:
             continue
         presentes.add(a['clave'])
+        nombres[a['clave']] = c.nombre
         df = c.df
         t = df['t'].to_numpy() - df['t'].iloc[0]
         kw = dict(color=a['color'], ls=a['estilo'], lw=1.4)
@@ -500,7 +523,10 @@ def figura_temporal(ruta, carpeta, salida, formatos, dpi, unidad='deg'):
     ax1.axhline(0.0, color=TINTA_2, lw=0.8, zorder=1)
     ax1.set_ylabel('Error lateral $x_1$ [m]')
     ax2.axhline(0.0, color=TINTA_2, lw=0.8, zorder=1)
-    for valor, texto in ((UMBRAL_PANICO_RAD, 'umbral de pánico'), (UMBRAL_JACKKNIFE_RAD, 'corte por jackknife')):
+    umbrales = [(UMBRAL_JACKKNIFE_RAD, 'corte por jackknife')]
+    if 'backward' in presentes:                # el umbral de pánico es solo del control aditivo
+        umbrales.insert(0, (UMBRAL_PANICO_RAD, 'umbral de pánico'))
+    for valor, texto in umbrales:
         for signo in (1, -1):
             ax2.axhline(signo * valor * k, color=TINTA_2, lw=0.8, ls=':', zorder=1)
         ax2.annotate(f"{texto} (±{valor:.2f} rad)", xy=(1.0, valor * k), xycoords=('axes fraction', 'data'),
@@ -517,7 +543,7 @@ def figura_temporal(ruta, carpeta, salida, formatos, dpi, unidad='deg'):
     fig.suptitle(f"Respuesta temporal comparativa: {ETIQUETA_RUTA[ruta]}", color=TINTA)
     fig.align_ylabels((ax1, ax2, ax3))
     fig.tight_layout(rect=(0, 0.05, 1, 1))
-    fig.legend(handles=_manejadores_leyenda(presentes, hay_jk, con_ruta=False), loc='lower center',
+    fig.legend(handles=_manejadores_leyenda(presentes, hay_jk, con_ruta=False, nombres=nombres), loc='lower center',
                bbox_to_anchor=(0.5, 0.0), ncol=4, frameon=False)
     return _guardar(fig, salida, f"respuestas_temporales_comparativas_{ruta}", formatos, dpi)
 

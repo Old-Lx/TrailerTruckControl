@@ -40,7 +40,7 @@ CSV_CABECERA = ['t', 'x_real', 'y_real', 'x_ref', 'y_ref',
                 'x_tractor', 'y_tractor', 'x_trailer', 'y_trailer', 'psi_tractor', 'psi_trailer', 'velocidad',
                 'error_lateral_tractor', 'error_lateral_trailer',
                 'error_lateral_ctrl', 'error_angular_ctrl', 'control_actualizado',
-                'volante_input', 'volante_real_deg']
+                'volante_input', 'volante_real_deg', 'throttle', 'brake']
 
 archivo_csv_activo = None
 _aviso_sin_csv_emitido = False
@@ -140,11 +140,12 @@ def _fila_csv(fila):
 
 
 def registrar_muestra(t, sensores, steering, control_actualizado=True,
-                      error_lateral_ctrl=None, error_angular_ctrl=None):
+                      error_lateral_ctrl=None, error_angular_ctrl=None, throttle=None, brake=None):
     """
     Registra UNA muestra a partir del diccionario de read_sensors() y del comando de dirección aplicado.
     Calcula los errores geométricos uniformes (ver cabecera) y escribe la fila en el CSV activo.
     error_*_ctrl: las señales internas del controlador en ese instante (solo diagnóstico).
+    throttle, brake: comandos de acelerador y freno aplicados (retenidos entre ciclos de control).
     """
     global _aviso_sin_csv_emitido
     tractor = sensores['truck_pos']
@@ -185,7 +186,8 @@ def registrar_muestra(t, sensores, steering, control_actualizado=True,
     _fila_csv([t, float(real[0]), float(real[1]), x_ref, y_ref, lat, e_ang, delta, float(steering),
                float(tractor[0]), float(tractor[1]), float(trailer[0]), float(trailer[1]), psi_tractor, psi_trailer, v,
                lat_tr, lat_rm, error_lateral_ctrl, error_angular_ctrl, int(bool(control_actualizado)),
-               sensores.get('volante_input'), sensores.get('volante_real_deg')])
+               sensores.get('volante_input'), sensores.get('volante_real_deg'),
+               None if throttle is None else float(throttle), None if brake is None else float(brake)])
     _sesion['n'] = _sesion.get('n', 0) + 1
     if _sesion.get('t_ini') is None:
         _sesion['t_ini'] = t

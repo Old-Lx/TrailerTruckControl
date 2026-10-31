@@ -22,11 +22,27 @@ Las usan igual los tres algoritmos (comparación justa en la tesis):
    el FRENO DE MANO, suelta el freno de servicio y pone neutro. Antes main() salía del bucle con
    brake=1 todavía aplicado: con la caja automática "arcade" de BeamNG, mantener el freno con el
    vehículo detenido engrana la reversa y el camión arranca hacia atrás.
+
+5. ControlVelocidad: control de velocidad (acelerador y freno) común a los tres algoritmos.
+   Modo 'pi' (por defecto desde oct-2026): PI sobre el acelerador con anti-windup y freno solo fuera
+   de una banda muerta. Modo 'original': la ley anterior, throttle = 0.1 + kp*e si e > 0 y si no
+   brake = 0.5*kp*|e|. Ese 0.1 fijo hace que la acción salte de "acelerar 0.1" a "frenar" al cruzar
+   e = 0 (un relé): en BeamNG producía un ciclo límite de 1.24 Hz (6 ciclos de control) con
+   ±0.13 m/s en velocidad, que se transmitía al volante y a la articulación (corrida forward/recta_x
+   del 30-oct-2026).
 """
 import math
 import time
 
+import numpy as np
+
 _CACHE = {}
+
+# ---- Control de velocidad --------------------------------------------------------------------------
+MODO_CONTROL_VELOCIDAD = 'pi'    # 'pi' | 'original' (comparación A/B; ver docstring)
+KI_VELOCIDAD = 0.15              # 1/s por m/s: el integrador aprende el acelerador de régimen (Ti = kp/ki)
+BANDA_FRENO = 0.2                # m/s: el freno solo actúa si el vehículo va más rápido que esto sobre el objetivo
+INTEGRADOR_MAX = 0.6             # tope del término integral (acelerador)
 
 
 def _acumuladas(ruta):
@@ -80,6 +96,46 @@ def debe_frenar(d_rem, velocidad, a_frenado, margen):
     """True cuando la distancia de parada a freno máximo alcanza la distancia que queda."""
     v = abs(velocidad)
     return d_rem <= (v * v) / (2.0 * a_frenado) + margen
+
+
+class ControlVelocidad:
+    """
+    Control de velocidad sobre la magnitud |v| (el sentido lo da la marcha). Se crea uno por corrida
+    (guarda el integrador) y se llama una vez por ciclo de control: throttle, brake = ctrl(v_obj, v, dt).
+
+    Modo 'pi':
+        e = v_obj - v
+        throttle = clip(I + kp*e, 0, 1);  I += ki*e*dt solo si la acción no está saturada en el
+                   sentido de e (anti-windup por integración condicional), con I en [0, INTEGRADOR_MAX]
+        brake    = kb*(|e| - BANDA_FRENO) si e < -BANDA_FRENO (y entonces throttle = 0); kb = 0.5*kp
+    En crucero I converge al acelerador que mantiene la velocidad y la acción es continua: no hay relé.
+    Con v_obj por debajo de la velocidad de crucero (perfil de llegada o atenuación por roll) se trata
+    de bajar la velocidad: si e < 0 se frena como en la ley original (sin banda muerta, throttle = 0);
+    con la banda, el conjunto seguía el perfil de llegada con atraso y se detenía ~15 cm más lejos del
+    punto final (verificado en el arnés).
+    """
+
+    def __init__(self, kp, v_crucero, modo=None):
+        self.kp = kp
+        self.v_crucero = v_crucero
+        self.modo = modo or MODO_CONTROL_VELOCIDAD
+        self.integrador = 0.0
+
+    def __call__(self, v_obj, v, dt):
+        e = v_obj - abs(v)
+        if self.modo == 'original':
+            if e > 0:
+                return float(np.clip(0.1 + self.kp * e, 0.0, 1.0)), 0.0
+            return 0.0, float(np.clip(-self.kp * e * 0.5, 0.0, 1.0))
+
+        if e < 0 and v_obj < self.v_crucero - 1e-6:          # llegada o atenuación: bajar la velocidad
+            return 0.0, float(np.clip(-0.5 * self.kp * e, 0.0, 1.0))
+        if e < -BANDA_FRENO:
+            return 0.0, float(np.clip(0.5 * self.kp * (-e - BANDA_FRENO), 0.0, 1.0))
+        u = self.integrador + self.kp * e
+        if (0.0 < u < 1.0) or (u >= 1.0 and e < 0) or (u <= 0.0 and e > 0):
+            self.integrador = float(np.clip(self.integrador + KI_VELOCIDAD * e * (dt or 0.0), 0.0, INTEGRADOR_MAX))
+        return float(np.clip(self.integrador + self.kp * e, 0.0, 1.0)), 0.0
 
 
 def punto_objetivo_extendido(ruta, pos, lookahead):

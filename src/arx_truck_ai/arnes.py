@@ -75,6 +75,7 @@ class Planta:
         self.th1 = self.th2 = 0.0 if s > 0 else math.pi
         self.H = np.array([-OFF_TRUCK * s, 0.0])           # state['pos'] del camión queda en el origen
         self.v = 0.0; self.delta = 0.0; self.t = 0.0
+        self.volante_cabina = 0.0                          # grados (sensor Electrics 'steering')
         self.cola = collections.deque([0.0] * int(round(RETARDO / DT)))   # buffer del retardo puro
         self.cmd = dict(steering=0.0, throttle=0.0, brake=0.0, parkingbrake=0, gear=1)
 
@@ -87,6 +88,8 @@ class Planta:
         c = self.cmd
         # Dirección: retardo puro (cola) + primer orden. steering > 0 gira las ruedas a la derecha.
         self.cola.append(float(np.clip(c['steering'], -1, 1)))
+        # Volante de la cabina: como en BeamNG, copia el comando (-900° por unidad); el retardo está después
+        self.volante_cabina = -900.0 * self.cola[-1]
         u = self.cola.popleft()
         self.delta += DT / TAU * (-DELTA_MAX * u - self.delta)
         # Longitudinal: marcha (-1 reversa, 0 neutro, otra adelante), acelerador, freno y rodadura.
@@ -133,9 +136,9 @@ class _Sensores:
     def poll(self): pass
     def __getitem__(self, k):
         if k == 'timer': return {'time': self.planta.t}
-        if k == 'electrics':                   # sensor Electrics: comando y ángulo del volante (450° a tope)
+        if k == 'electrics':                   # sensor Electrics: comando y ángulo del volante de la cabina
             return {'steering_input': self.planta.cmd['steering'],
-                    'steering': -self.planta.delta / DELTA_MAX * 450.0}
+                    'steering': self.planta.volante_cabina}
         raise KeyError(k)
 
 
@@ -213,7 +216,7 @@ def _bng_open_main(direction):
 # =====================================================================================
 bo = types.ModuleType("arx_truck_ai.bng_open"); bo.main = _bng_open_main
 sys.modules["arx_truck_ai.bng_open"] = bo; pkg.bng_open = bo
-_load("arx_truck_ai.fin_ruta", "fin_ruta.py")
+fr = _load("arx_truck_ai.fin_ruta", "fin_ruta.py")
 _load("arx_truck_ai.geometria_ruta", "geometria_ruta.py")
 _load("arx_truck_ai.debugging_sys", "debugging_sys.py")
 nombre_mod, archivo = {"forward": ("forward", "forward.py"), "backward": ("backward", "backward.py"),
@@ -224,12 +227,13 @@ nombre_mod, archivo = {"forward": ("forward", "forward.py"), "backward": ("backw
 mod = _load(f"arx_truck_ai.{nombre_mod}", archivo)
 
 # Ajustes opcionales NOMBRE=valor tras la ruta (p. ej. PREALIMENTACION_CURVATURA=False): se aplican al
-# módulo del algoritmo, o a truck_trailer si la constante es de ese módulo. Sirve para comparar variantes.
+# módulo del algoritmo, o a truck_trailer o fin_ruta si la constante es de ese módulo (p. ej.
+# MODO_CONTROL_VELOCIDAD=original). Sirve para comparar variantes.
 import ast
 for arg in sys.argv[3:]:
     nombre, valor = arg.split('=', 1)
-    destino = mod if hasattr(mod, nombre) else tt
-    if not hasattr(destino, nombre):
+    destino = next((m for m in (mod, tt, fr) if hasattr(m, nombre)), None)
+    if destino is None:
         raise SystemExit(f"arnes: no existe la constante {nombre}")
     try:
         valor = ast.literal_eval(valor)

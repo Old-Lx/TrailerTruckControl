@@ -3,8 +3,9 @@ from arx_truck_ai.debugging_sys import (registrar_muestra, generar_grafico_evalu
                                        finalizar_telemetria)
 from arx_truck_ai import truck_trailer as tt
 from arx_truck_ai import bng_open
+from arx_truck_ai import fin_ruta as fr
 from arx_truck_ai.fin_ruta import (distancia_restante, velocidad_limite_fin, debe_frenar,
-                                   punto_objetivo_extendido, indice_segmento, detener_en_fin)
+                                   punto_objetivo_extendido, indice_segmento, detener_en_fin, ControlVelocidad)
 import numpy as np
 
 # ---------------------------------------------------------------------------
@@ -27,8 +28,10 @@ LEY_DIRECCION = 'proporcional'
 KP_STEER = 1.2
 L1_TRACTOR = 2.93        # m    batalla efectiva del tractor (identificada, ver backwards_lqr.py)
 PHI_MAX_RAD = 0.6        # rad  ángulo de rueda con |steering| = 1 (supuesto, mismo que el LQR)
+KP_VELOCIDAD = 0.5       # ganancia proporcional del control de velocidad (fin_ruta.ControlVelocidad)
 
-def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, velocidad, ruta, current_idx, min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5):
+def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, velocidad, ruta, current_idx, min_lookahead=5.0, max_lookahead=15.0, k_lookahead_gain=3.5,
+                         ctrl_vel=None, dt=None):
     """
     Algoritmo de control de seguimiento de trayectoria básico usando Pure Pursuit / Proporcional.
     Implementa Lookahead Dinámico basado en la velocidad (con objetivo virtual extrapolado en el tramo
@@ -138,16 +141,10 @@ def control_proporcional(pos_actual, yaw_actual, truck_roll, truck_roll_rate, ve
     # como un sistema de control de estabilidad activo (ESC) para devolver tracción al asfalto.
     velocidad_objetivo *= atenuacion_dinamica
     
-    kp_vel = 0.5
-    error_vel = velocidad_objetivo - velocidad
-
-    throttle = 0.0
-    brake = 0.0
-
-    if error_vel > 0:
-        throttle = np.clip(0.1 + kp_vel * error_vel, 0.0, 1.0)
-    else:
-        brake = np.clip(-kp_vel * error_vel * 0.5, 0.0, 1.0)
+    # Control de velocidad común (fin_ruta.ControlVelocidad: PI o la ley 'original')
+    if ctrl_vel is None:
+        ctrl_vel = ControlVelocidad(KP_VELOCIDAD, V_CRUCERO, modo='original')
+    throttle, brake = ctrl_vel(velocidad_objetivo, velocidad, dt)
 
     # Verificar si hemos llegado al final de la ruta: frenar a fondo cuando la distancia de parada
     # alcanza a la que queda (o si ya se pasó). Se mide a lo largo de la ruta, así que funciona
@@ -175,13 +172,15 @@ def main():
                            frecuencia_simulacion=tt.FRECUENCIA_SIMULACION,
                            frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
                            if tt.MODO_SINCRONO else None,
-                           ley_direccion=LEY_DIRECCION, v_crucero=V_CRUCERO)
+                           ley_direccion=LEY_DIRECCION, v_crucero=V_CRUCERO,
+                           control_velocidad=fr.MODO_CONTROL_VELOCIDAD)
 
     # Estado del lazo
     previous_truck_roll = None   # None: en el primer ciclo la tasa de roll es 0 (no se deriva contra 0)
     t0 = None                 # t = 0 en la primera muestra
     t_ultimo_control = None
     steering, throttle, brake = 0.0, 0.0, 0.0
+    ctrl_vel = ControlVelocidad(KP_VELOCIDAD, V_CRUCERO)
     error_lateral = yaw_error = None
     finished = False
     resultado, info_fin = 'completada', {}
@@ -213,7 +212,8 @@ def main():
 
             # Control proporcional (Pure Pursuit) con lookahead dinámico y control amortiguado (Active Yaw)
             steering, throttle, brake, current_idx, finished, error_lateral, yaw_error = control_proporcional(
-                pos_camion, yaw_camion, truck_roll, truck_roll_rate, v1, route_points, current_idx
+                pos_camion, yaw_camion, truck_roll, truck_roll_rate, v1, route_points, current_idx,
+                ctrl_vel=ctrl_vel, dt=dt
             )
             # Aplicar el comando al vehículo en el simulador (se mantiene hasta la próxima actualización)
             truck_trailer.truck.control(steering=steering, throttle=throttle, brake=brake, parkingbrake=0)
@@ -221,7 +221,8 @@ def main():
         # Telemetría: el tick de fin de ruta es un comando de frenado, no una muestra de seguimiento
         if not finished:
             registrar_muestra(t_rel, sensores, steering, control_actualizado=es_ciclo_control,
-                              error_lateral_ctrl=error_lateral, error_angular_ctrl=yaw_error)
+                              error_lateral_ctrl=error_lateral, error_angular_ctrl=yaw_error,
+                              throttle=throttle, brake=brake)
 
         if finished:
             print("Fin de ruta: frenando hasta detener el camión...")

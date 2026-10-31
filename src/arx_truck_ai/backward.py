@@ -1,10 +1,11 @@
 import math
 from arx_truck_ai import bng_open
+from arx_truck_ai import fin_ruta as fr
 from arx_truck_ai.debugging_sys import (registrar_muestra, generar_grafico_evaluacion,
                                        inicializar_telemetria, finalizar_telemetria)
 from arx_truck_ai import truck_trailer as tt
 from arx_truck_ai.fin_ruta import (distancia_restante, velocidad_limite_fin, debe_frenar,
-                                   punto_objetivo_extendido, indice_segmento, detener_en_fin)
+                                   punto_objetivo_extendido, indice_segmento, detener_en_fin, ControlVelocidad)
 import numpy as np
 
 # ---------------------------------------------------------------------------
@@ -14,6 +15,7 @@ A_APROXIMACION = 0.3     # m/s²  desaceleración del perfil de llegada: v_obj =
 V_LLEGADA = 0.5          # m/s   velocidad mínima del perfil mientras quede ruta
 A_FRENADO = 1.5          # m/s²  desaceleración que se ASUME con freno a fondo (conservadora)
 MARGEN_PARADA = 0.3      # m     margen extra antes del punto final
+KP_VELOCIDAD = 0.4       # ganancia proporcional del control de velocidad (fin_ruta.ControlVelocidad)
 # ---------------------------------------------------------------------------
 
 
@@ -80,7 +82,8 @@ def control_aditivo_histeresis(
         prev_seg_dir=None,  # (ux,uy) dirección unitaria del segmento de ruta usado el tick anterior; None en el primer tick
         dt: float         = 0.02,
         alpha_ema_trailer: float = 0.15,  # suavizado del EMA sobre e_trailer_rate (0=sin filtro, 1=total)
-        min_lookahead=10.0, max_lookahead=20.0, k_lookahead_gain=3.5
+        min_lookahead=10.0, max_lookahead=20.0, k_lookahead_gain=3.5,
+        ctrl_vel=None,                    # fin_ruta.ControlVelocidad de la corrida (None: ley 'original', sin estado)
         ):
     """
     Algoritmo de control aditivo con histéresis para marcha hacia atrás.
@@ -335,15 +338,10 @@ def control_aditivo_histeresis(
     # para mitigar el derrape o vuelco inminente.
     velocidad_objetivo *= atenuacion_dinamica
 
-    error_vel = velocidad_objetivo - velocidad
-
-    kp_vel = 0.4
-    if error_vel > 0:
-        throttle = np.clip(0.1 + kp_vel * error_vel, 0.0, 1.0)
-        brake = 0.0
-    else:
-        throttle = 0.0
-        brake = np.clip(-kp_vel * error_vel * 0.5, 0.0, 1.0)
+    # Control de velocidad común (fin_ruta.ControlVelocidad: PI o la ley 'original')
+    if ctrl_vel is None:
+        ctrl_vel = ControlVelocidad(KP_VELOCIDAD, V_CRUCERO, modo='original')
+    throttle, brake = ctrl_vel(velocidad_objetivo, velocidad, dt)
 
     # Verificar si hemos llegado al final de la ruta: frenar a fondo cuando la distancia de parada
     # alcanza a la que queda (o si ya se pasó). Se mide a lo largo de la ruta, así que funciona
@@ -373,7 +371,8 @@ def main():
                            tipo_ruta=tt.TIPO_RUTA, modo='sincrono' if tt.MODO_SINCRONO else 'libre',
                            frecuencia_simulacion=tt.FRECUENCIA_SIMULACION,
                            frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
-                           if tt.MODO_SINCRONO else None)
+                           if tt.MODO_SINCRONO else None,
+                           control_velocidad=fr.MODO_CONTROL_VELOCIDAD)
 
     # Variables de estado inicial para el subsistema derivativo del jackknifing y roll.
     # None: en el primer ciclo de control las derivadas valen 0 (antes se derivaba contra 0 y, si el
@@ -401,6 +400,7 @@ def main():
     t0 = None
     t_ultimo_control = None
     steering, throttle, brake = 0.0, 0.0, 0.0
+    ctrl_vel = ControlVelocidad(KP_VELOCIDAD, V_CRUCERO)
     e_trailer = e_ct = None
     finished = False
     resultado, info_fin = 'completada', {}
@@ -456,7 +456,8 @@ def main():
                 e_trailer_rate_filtrada = e_trailer_rate_filtrada_state,
                 prev_seg_dir = prev_seg_dir_state,
                 alpha_ema_trailer = 0.15,
-                dt          = dt
+                dt          = dt,
+                ctrl_vel    = ctrl_vel
             )
             prev_e_trailer_state = e_trailer  # para la derivada del siguiente ciclo de control
 
@@ -465,7 +466,8 @@ def main():
         # Telemetría: el tick de fin de ruta es un comando de frenado, no una muestra de seguimiento
         if not finished:
             registrar_muestra(t_rel, sensores, steering, control_actualizado=es_ciclo_control,
-                              error_lateral_ctrl=e_ct, error_angular_ctrl=e_trailer)
+                              error_lateral_ctrl=e_ct, error_angular_ctrl=e_trailer,
+                              throttle=throttle, brake=brake)
 
         if abs(delta_F2) >= 1:
             print("Jackknife :c")

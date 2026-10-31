@@ -13,6 +13,7 @@ nombre del archivo no incluye la variante:
 y evalúa cada carpeta con --datos.
 """
 from arx_truck_ai import truck_trailer
+from arx_truck_ai import fin_ruta
 from arx_truck_ai import forward as fwd, backward as bwd, backwards_lqr as bwd_lqr
 
 # 0 recta_x | 1 recta_y | 2 recta_diagonal | 3 parabola_x | 4 parabola_y | 5 seno_x | 6 seno_y
@@ -23,9 +24,11 @@ truck_trailer.TIPO_RUTA = 0
 truck_trailer.MODO_SINCRONO = True
 truck_trailer.DECIMACION_CONTROL = 8
 
-ALGORITMO = 'lqr'   # 'forward' | 'backward' | 'lqr'
+ALGORITMO = 'forward'   # 'forward' | 'backward' | 'lqr'
 
 # ---- Opciones de los controladores (valores por defecto = los del módulo) ----------------------------
+# Control de velocidad, común a los tres: 'pi' (desde oct-2026) | 'original' (P con 0.1 fijo: ciclo límite)
+fin_ruta.MODO_CONTROL_VELOCIDAD = 'pi'
 # Marcha adelante: 'proporcional' (ley validada hasta oct-2026) | 'pure_pursuit' (Pure Pursuit clásico)
 fwd.LEY_DIRECCION = 'proporcional'
 # LQR (ver MEJORAS DE OCT-2026 en backwards_lqr.py)
