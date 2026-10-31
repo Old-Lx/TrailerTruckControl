@@ -1,3 +1,4 @@
+import atexit
 import csv
 import json
 import logging
@@ -43,6 +44,8 @@ CSV_CABECERA = ['t', 'x_real', 'y_real', 'x_ref', 'y_ref',
                 'volante_input', 'volante_real_deg', 'throttle', 'brake']
 
 archivo_csv_activo = None
+_archivo_abierto = None      # archivo del CSV activo, abierto con búfer (ver _fila_csv)
+_escritor_csv = None
 _aviso_sin_csv_emitido = False
 _sesion = {}          # estado de la corrida activa (ruta, sentido, metadatos, contadores)
 
@@ -113,6 +116,7 @@ def inicializar_telemetria(nombre_archivo, puntos_ruta=None, sentido=+1, punto_c
     metadatos:      se guardan en el .json de la corrida (algoritmo, ruta, modo, ...)
     """
     global archivo_csv_activo, _aviso_sin_csv_emitido, _sesion
+    _cerrar_csv()
     archivo_csv_activo = nombre_archivo
     _aviso_sin_csv_emitido = False
     for k in historial:
@@ -135,8 +139,23 @@ def inicializar_telemetria(nombre_archivo, puntos_ruta=None, sentido=+1, punto_c
 
 
 def _fila_csv(fila):
-    with open(archivo_csv_activo, 'a', newline='', encoding='utf-8') as f:
-        csv.writer(f, lineterminator='\n').writerow(['' if v is None else v for v in fila])
+    """Agrega una fila al CSV activo. El archivo queda abierto con búfer durante la corrida (antes se abría y
+    cerraba en cada fila, 60 veces por segundo de simulación) y se cierra en finalizar_telemetria()."""
+    global _archivo_abierto, _escritor_csv
+    if _archivo_abierto is None:
+        _archivo_abierto = open(archivo_csv_activo, 'a', newline='', encoding='utf-8')
+        _escritor_csv = csv.writer(_archivo_abierto, lineterminator='\n')
+    _escritor_csv.writerow(['' if v is None else v for v in fila])
+    if _sesion.get('n', 0) % 600 == 0:          # cada 10 s de simulación: lo escrito queda en disco
+        _archivo_abierto.flush()
+
+
+@atexit.register
+def _cerrar_csv():
+    global _archivo_abierto, _escritor_csv
+    if _archivo_abierto is not None:
+        _archivo_abierto.close()
+    _archivo_abierto = _escritor_csv = None
 
 
 def registrar_muestra(t, sensores, steering, control_actualizado=True,
@@ -201,6 +220,7 @@ def finalizar_telemetria(resultado, **extra):
     """
     if archivo_csv_activo is None:
         return
+    _cerrar_csv()
     meta = dict(_sesion.get('metadatos', {}))
     meta.update(extra)
     n = _sesion.get('n', 0)

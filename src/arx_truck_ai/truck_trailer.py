@@ -43,9 +43,17 @@ FRECUENCIA_SIMULACION = 60     # Hz (bng.settings.set_deterministic)
 DECIMACION_CONTROL = 8         # pasos de simulación por actualización del control (solo modo síncrono)
 DURACION_MAXIMA_S = 300.0      # s de simulación: corte de seguridad si el experimento no termina
 
-# Instrumentación. Las IMU y los lidar quedan instalados (instrumentación disponible) pero no se leen:
-# ningún controlador usa sus datos y leerlos en cada ciclo solo agrega tiempo de comunicación.
-LEER_IMU_LIDAR = False
+# Instrumentación. Ningún controlador usa las IMU ni los lidar. CREARLOS ya cuesta aunque no se lean: BeamNG
+# los calcula dentro de cada paso (las AdvancedIMU en cada subpaso de la física, a 2000 Hz, y los lidar con
+# trazado de rayos cada 0.01 s), y en modo síncrono step() no regresa hasta terminar. Con ellos y las dos
+# cámaras la simulación avanzaba a ~0.22 veces el tiempo real (corridas del 30/31-oct-2026).
+CREAR_IMU_LIDAR = False      # True: se instalan (instrumentación disponible para trabajo futuro)
+LEER_IMU_LIDAR = False       # solo tiene efecto si CREAR_IMU_LIDAR = True
+# Cámaras frontal y trasera con la ruta proyectada (solo visualización, no entran al control). Sin ellas
+# no se abre la ventana de OpenCV y la calibración usa la pose configurada de la cámara (solo afecta al dibujo).
+CAMARAS_ACTIVAS = True
+# Reporte periódico del ritmo de la simulación (veces el tiempo real y ms por paso en cada fase); 0 = nunca
+REPORTE_RITMO_CADA_S = 10.0  # s de simulación
 # Sensor Electrics del camión: registra el comando de volante que recibió BeamNG y el ángulo real del
 # volante (en grados). Permite medir el retardo del actuador de dirección (identificación de la planta).
 REGISTRAR_VOLANTE_REAL = True
@@ -457,6 +465,9 @@ class TruckTrailer:
         self._pasos = 0          # pasos de simulación avanzados en modo síncrono
         self._t_reloj0 = time.time()
         self._fuente_tiempo = None
+        self.imu_truck = self.imu_trailer = self.lidar_front = self.lidar_rear = None
+        self.front_cam = self.reverse_cam = None
+        self._ritmo = dict(step=0.0, poll=0.0, cam=0.0, pasos=0, t_reloj=None)
 
     # ------------------------------------------------------------------ ejecución del experimento
     @property
@@ -498,11 +509,30 @@ class TruckTrailer:
         """En modo síncrono avanza la simulación `pasos` pasos de 1/FRECUENCIA_SIMULACION s."""
         if not MODO_SINCRONO:
             return
+        t_ini = time.perf_counter()
         try:
             self.bng.control.step(pasos)       # BeamNGpy reciente
         except AttributeError:
             self.bng.step(pasos)               # BeamNGpy anterior
         self._pasos += pasos
+        r = self._ritmo
+        r['step'] += time.perf_counter() - t_ini
+        r['pasos'] += pasos
+        if r['t_reloj'] is None:
+            r['t_reloj'] = t_ini
+        elif REPORTE_RITMO_CADA_S and r['pasos'] >= REPORTE_RITMO_CADA_S * FRECUENCIA_SIMULACION:
+            self._reportar_ritmo(time.perf_counter())
+
+    def _reportar_ritmo(self, ahora):
+        """Imprime cuántas veces el tiempo real avanza la simulación y en qué se va el tiempo de cada paso."""
+        r = self._ritmo
+        n = r['pasos']
+        total = ahora - r['t_reloj']
+        otros = total - r['step'] - r['poll'] - r['cam']
+        print(f"[ritmo] {n / FRECUENCIA_SIMULACION / total:.2f}x tiempo real | por paso: step {1e3 * r['step'] / n:.1f} ms, "
+              f"lectura de sensores {1e3 * r['poll'] / n:.1f} ms, cámaras {1e3 * r['cam'] / n:.1f} ms, "
+              f"control + telemetría {1e3 * otros / n:.1f} ms")
+        self._ritmo = dict(step=0.0, poll=0.0, cam=0.0, pasos=0, t_reloj=ahora)
 
     def liberar_simulacion(self):
         """Al terminar, deja la simulación corriendo para poder inspeccionarla (modo síncrono)."""
@@ -696,61 +726,64 @@ class TruckTrailer:
         self.truck.attach_sensor('state_truck', self.state_truck)
 
         # IMU para medir posición y orientación del camión
-        self.imu_truck = AdvancedIMU(
-            "accel1", 
-            self.bng, 
-            self.truck,
-            pos=(0, -0.394, 0.7),   # En el parachoque pero más arriba
-            dir=(0, 1, 0),
-            up=(0, 0, 1),
-            gfx_update_time=0.0005,
-            physics_update_time=0.0005,
+        if CREAR_IMU_LIDAR:
+            self.imu_truck = AdvancedIMU(
+                "accel1", 
+                self.bng, 
+                self.truck,
+                pos=(0, -0.394, 0.7),   # En el parachoque pero más arriba
+                dir=(0, 1, 0),
+                up=(0, 0, 1),
+                gfx_update_time=0.0005,
+                physics_update_time=0.0005,
 
-            # Smoothing strength
-            smoother_strength=1.0,
+                # Smoothing strength
+                smoother_strength=1.0,
 
-            # Sensor behavior flags
-            is_using_gravity=True,
-            is_visualised=True,
-            is_snapping_desired=True,
-            is_force_inside_triangle=False,
-            is_allow_wheel_nodes=False
-        )
+                # Sensor behavior flags
+                is_using_gravity=True,
+                is_visualised=True,
+                is_snapping_desired=True,
+                is_force_inside_triangle=False,
+                is_allow_wheel_nodes=False
+            )
 
         # Cámara para seguir la ruta
-        self.front_cam = Camera(
-            'front_cam', 
-            self.bng, 
-            vehicle=self.truck, 
-            pos=CAMARAS['front']['pos'],   # En la parte del techo del camión en el frente
-            dir=CAMARAS['front']['dir'],   # Viendo 15 grados hacia abajo del eje Y en el plano YZ
-            up=CAMARAS['front']['up'],
-            resolution=(512, 512),
-            field_of_view_y=CAMARAS['front']['fov_y'], # 70 es el default
-            is_using_shared_memory=True,
-            is_visualised=True,
-            is_streaming=True,
-            is_snapping_desired=False,
-            is_force_inside_triangle=False
-        )
+        if CAMARAS_ACTIVAS:
+            self.front_cam = Camera(
+                'front_cam', 
+                self.bng, 
+                vehicle=self.truck, 
+                pos=CAMARAS['front']['pos'],   # En la parte del techo del camión en el frente
+                dir=CAMARAS['front']['dir'],   # Viendo 15 grados hacia abajo del eje Y en el plano YZ
+                up=CAMARAS['front']['up'],
+                resolution=(512, 512),
+                field_of_view_y=CAMARAS['front']['fov_y'], # 70 es el default
+                is_using_shared_memory=True,
+                is_visualised=True,
+                is_streaming=True,
+                is_snapping_desired=False,
+                is_force_inside_triangle=False
+            )
 
-         # Sensor para los golpes marcha hacia delante
-        self.lidar_front = Lidar(
-            "lidar_front", 
-            self.bng, 
-            self.truck,
-            requested_update_time=0.01, 
-            is_using_shared_memory=True,
-            is_360_mode=False,
-            is_rotate_mode= False,
-            horizontal_angle=90,
-            pos=(0, -0.324, 0.320), # En la parte de abajo del parachoque
-            dir=(0, -1, 0),        # Apuntando hacia adelante (Eje -Y en BeamNG)
-            up=(0, 0, 1),
-            vertical_resolution=16, 
-            frequency=20, 
-            is_visualised=False
-        )
+        # Sensor para los golpes marcha hacia delante
+        if CREAR_IMU_LIDAR:
+            self.lidar_front = Lidar(
+                "lidar_front", 
+                self.bng, 
+                self.truck,
+                requested_update_time=0.01, 
+                is_using_shared_memory=True,
+                is_360_mode=False,
+                is_rotate_mode= False,
+                horizontal_angle=90,
+                pos=(0, -0.324, 0.320), # En la parte de abajo del parachoque
+                dir=(0, -1, 0),        # Apuntando hacia adelante (Eje -Y en BeamNG)
+                up=(0, 0, 1),
+                vertical_resolution=16, 
+                frequency=20, 
+                is_visualised=False
+            )
 
         # Sensores del trailer
 
@@ -759,69 +792,74 @@ class TruckTrailer:
         self.trailer.attach_sensor('state_trailer', self.state_trailer)
 
         # IMU para medir posición y orientación del trailer
-        self.imu_trailer = AdvancedIMU(
-            "imu_trailer", 
-            self.bng, 
-            self.trailer,
-            pos=(0, 1.765, 0.877), 
-            dir=(0, 1, 0), 
-            up=(0, 0, 1), # En el kingpin
-            gfx_update_time=0.0005, 
-            physics_update_time=0.0005,
-            smoother_strength=1.0, 
-            is_using_gravity=True, 
-            is_visualised=True
-        )
+        if CREAR_IMU_LIDAR:
+            self.imu_trailer = AdvancedIMU(
+                "imu_trailer", 
+                self.bng, 
+                self.trailer,
+                pos=(0, 1.765, 0.877), 
+                dir=(0, 1, 0), 
+                up=(0, 0, 1), # En el kingpin
+                gfx_update_time=0.0005, 
+                physics_update_time=0.0005,
+                smoother_strength=1.0, 
+                is_using_gravity=True, 
+                is_visualised=True
+            )
 
         # Cámara de marcha hacia atrás
-        self.reverse_cam = Camera(
-            'reverse_cam', 
-            self.bng, 
-            vehicle=self.trailer,
-            pos=CAMARAS['reverse']['pos'],   # En la parte de atrás y arriba del trailer
-            dir=CAMARAS['reverse']['dir'],
-            up=CAMARAS['reverse']['up'],
-            resolution=(512, 512),
-            field_of_view_y=CAMARAS['reverse']['fov_y'],
-            is_using_shared_memory=True,
-            is_visualised=True,
-            is_streaming=True,
-            is_snapping_desired=False,
-            is_force_inside_triangle=False
-        )
+        if CAMARAS_ACTIVAS:
+            self.reverse_cam = Camera(
+                'reverse_cam', 
+                self.bng, 
+                vehicle=self.trailer,
+                pos=CAMARAS['reverse']['pos'],   # En la parte de atrás y arriba del trailer
+                dir=CAMARAS['reverse']['dir'],
+                up=CAMARAS['reverse']['up'],
+                resolution=(512, 512),
+                field_of_view_y=CAMARAS['reverse']['fov_y'],
+                is_using_shared_memory=True,
+                is_visualised=True,
+                is_streaming=True,
+                is_snapping_desired=False,
+                is_force_inside_triangle=False
+            )
 
         # Sensor para los golpes marcha hacia atrás
-        self.lidar_rear = Lidar(
-            "lidar_rear", 
-            self.bng, 
-            self.trailer,
-            requested_update_time=0.01,
-              is_using_shared_memory=True,
-            is_360_mode=False,
-            is_rotate_mode= False,
-            horizontal_angle=90,
-            pos=(0, 9.150, 0.376), # En la parte de atrás del trailer y abajo
-            dir=(0, 1, 0),         # Apuntando hacia atrás (Eje +Y en BeamNG)
-            up=(0, 0, 1.0),
-            vertical_resolution=16, 
-            frequency=20, 
-            is_visualised=False
-        )
+        if CREAR_IMU_LIDAR:
+            self.lidar_rear = Lidar(
+                "lidar_rear", 
+                self.bng, 
+                self.trailer,
+                requested_update_time=0.01,
+                  is_using_shared_memory=True,
+                is_360_mode=False,
+                is_rotate_mode= False,
+                horizontal_angle=90,
+                pos=(0, 9.150, 0.376), # En la parte de atrás del trailer y abajo
+                dir=(0, 1, 0),         # Apuntando hacia atrás (Eje +Y en BeamNG)
+                up=(0, 0, 1.0),
+                vertical_resolution=16, 
+                frequency=20, 
+                is_visualised=False
+            )
 
     # Función para leer los sensores del Truck Trailer
     def read_sensors(self, is_reverse=False, completo=True):
         """Lee el estado del conjunto. completo=False omite IMU, lidar y cámaras (no se usan en el
         control): es la lectura de los pasos intermedios del modo síncrono, solo para la telemetría."""
         # IMU y lidar: instalados pero sin uso en el control (ver LEER_IMU_LIDAR)
-        if completo and LEER_IMU_LIDAR:
+        if completo and LEER_IMU_LIDAR and CREAR_IMU_LIDAR:
             self.imu_truck.poll()
             self.imu_trailer.poll()
             self.lidar_front.poll()
             self.lidar_rear.poll()
 
         # Actualizar el estado físico de los vehículos (para leer el Yaw)
+        t_ini = time.perf_counter()
         self.truck.sensors.poll()
         self.trailer.sensors.poll()
+        self._ritmo['poll'] += time.perf_counter() - t_ini
 
         estado_camion = self.truck.state
         estado_trailer = self.trailer.state
@@ -899,7 +937,8 @@ class TruckTrailer:
         trailer_roll = math.asin(np.clip(trailer_right_vec[2], -1.0, 1.0))
 
         # Cámaras (solo en lecturas completas: son lo más costoso y solo sirven para visualizar)
-        if completo:
+        if completo and self.front_cam is not None and self.reverse_cam is not None:
+            t_ini = time.perf_counter()
             # Getting camera data (usar el mismo state recién leído para sincronizar proyección)
             reverse_cam_data = self.reverse_cam.poll()
             front_cam_data = self.front_cam.poll()
@@ -914,6 +953,7 @@ class TruckTrailer:
                 eje = self._eje_vehiculo(truck_pos_final, R_c[:, 0], z_ruta)
                 stream_cam(front_cam_data, self.route, estado_camion, is_reverse=False,
                            pose_camara=self.pose_camara_mundo('front', estado_camion), z_ruta=z_ruta, eje_vehiculo=eje)
+            self._ritmo['cam'] += time.perf_counter() - t_ini
 
         # Return the relevant data for the forward control algorithm
         return {

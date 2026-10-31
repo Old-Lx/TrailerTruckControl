@@ -23,8 +23,10 @@ truck_trailer.TIPO_RUTA = 0
 # Modo de ejecución: síncrono (registro a 60 Hz en tiempo de simulación, control a 60/8 = 7.5 Hz)
 truck_trailer.MODO_SINCRONO = True
 truck_trailer.DECIMACION_CONTROL = 8
+# Cámaras con la ruta proyectada (solo visualización). False acelera la simulación; los datos no cambian.
+truck_trailer.CAMARAS_ACTIVAS = True
 
-ALGORITMO = 'forward'   # 'forward' | 'backward' | 'lqr'
+ALGORITMO = 'backward'   # 'forward' | 'backward' | 'lqr'
 
 # ---- Opciones de los controladores (valores por defecto = los del módulo) ----------------------------
 # Control de velocidad, común a los tres: 'pi' (desde oct-2026) | 'original' (P con 0.1 fijo: ciclo límite)
