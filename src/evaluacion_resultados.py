@@ -18,6 +18,13 @@ Uso (desde la raíz del repositorio):
     python src/evaluacion_resultados.py
     python src/evaluacion_resultados.py --datos corridas/ --salida figuras/cap5 --formatos png pdf --dpi 300
     python src/evaluacion_resultados.py --unidad-articulacion rad
+    python src/evaluacion_resultados.py --datos corridas/campana_r1 corridas/campana_r2 corridas/campana_r3
+
+Repeticiones. Las corridas de BeamNG no se repiten exactamente (dos corridas iguales difieren), así que cada
+caso se corre N veces, cada una en su carpeta. Con varias carpetas en --datos, metricas.csv tiene una fila por
+corrida (columna carpeta), metricas_agregadas.csv una por caso (ruta × algoritmo × ley) con la media, la
+desviación estándar muestral (<métrica>_sd) y cuántos valores entraron (<métrica>_n), y las tablas muestran
+media ± desviación. Las figuras se dibujan con la primera carpeta.
 
 Métricas (por corrida):
     RMSE_lat  = sqrt(mean(x1^2))            x1: error lateral con signo del punto de control [m]
@@ -290,6 +297,49 @@ def calcular_metricas(c):
     )
 
 
+# Métricas que se promedian entre repeticiones (además de las de la tabla)
+COLUMNAS_AGREGADAS = ['t_captura_s', 't_asent_s', 'rmse_lat_seg', 'rmse_yaw_seg', 'theta_max_deg', 's_smooth',
+                      'distancia_final_m', 'd_captura_m', 'theta_max_captura_deg', 'theta_max_seg_deg',
+                      'rmse_lat', 'rmse_yaw', 'duracion_s', 'sobrepaso_m', 'frecuencia_hz']
+
+
+def agregar_repeticiones(filas):
+    """Una fila por caso (ruta × algoritmo × ley) con la media y la desviación estándar muestral de cada
+    métrica entre sus repeticiones. Los valores no finitos (p. ej. t_captura de una corrida que nunca entró en
+    la banda) no entran en la media; <métrica>_n dice cuántos entraron. El caso cuenta como 'completada' solo
+    si lo fueron todas sus corridas, y como capturado solo si lo fueron todas."""
+    orden_ruta = [r for info in FAMILIAS.values() for r in info['rutas']]
+    orden_alg = [a['clave'] for a in ALGORITMOS]
+    grupos = {}
+    for f in filas:
+        grupos.setdefault((f['ruta'], f['algoritmo'], f['nombre']), []).append(f)
+    agregadas = []
+    for (ruta, alg, nombre) in sorted(grupos, key=lambda k: (orden_ruta.index(k[0]), orden_alg.index(k[1]), k[2])):
+        grupo = grupos[(ruta, alg, nombre)]
+        n = len(grupo)
+        resultados = [f['resultado'] for f in grupo]
+        distintos = sorted(set(resultados), key=resultados.index)
+        if len(distintos) == 1:
+            resultado = distintos[0]
+            resultado_txt = f"{RESULTADO_TXT.get(resultado, resultado)} ({n}/{n})"
+        else:
+            resultado = 'mixto'
+            resultado_txt = ", ".join(f"{RESULTADO_TXT.get(r, r)} {resultados.count(r)}/{n}" for r in distintos)
+        fila = dict(algoritmo=alg, ruta=ruta, nombre=nombre, n=n, n_completadas=resultados.count('completada'),
+                    resultado=resultado, resultado_txt=resultado_txt,
+                    capturada=all(f['capturada'] for f in grupo),
+                    formato='anterior' if any(f['formato'] == 'anterior' for f in grupo) else 'actual',
+                    carpetas=';'.join(f.get('carpeta', '') for f in grupo))
+        for col in COLUMNAS_AGREGADAS:
+            v = np.array([f[col] for f in grupo], dtype=float)
+            v = v[np.isfinite(v)]
+            fila[col] = float(v.mean()) if len(v) else float('nan')
+            fila[col + '_sd'] = float(v.std(ddof=1)) if len(v) > 1 else float('nan')
+            fila[col + '_n'] = int(len(v))
+        agregadas.append(fila)
+    return agregadas
+
+
 # =====================================================================================
 # TABLAS
 # =====================================================================================
@@ -314,6 +364,26 @@ def _nombre_alg(clave, campo='nombre'):
     return next((a[campo] for a in ALGORITMOS if a['clave'] == clave), clave)
 
 
+def _dispersion(f, col, fmt, signo):
+    """' ± desviación' de una fila agregada; vacío en una corrida suelta o con menos de dos valores."""
+    sd = f.get(col + '_sd', float('nan'))
+    return f"{signo}{fmt.format(sd)}" if np.isfinite(sd) else ''
+
+
+def _texto_resultado(f):
+    return f.get('resultado_txt') or RESULTADO_TXT.get(f['resultado'], f['resultado'])
+
+
+def _nota_repeticiones(filas):
+    """Nota de las tablas agregadas: cuántas corridas hay por caso (None si son corridas sueltas)."""
+    ns = sorted({f['n'] for f in filas if 'n' in f})
+    if not ns:
+        return None
+    rango = str(ns[0]) if len(ns) == 1 else f"{ns[0]}-{ns[-1]}"
+    return (f"Media ± desviación estándar muestral de {rango} corridas por caso; "
+            "el caso cuenta como completado solo si lo fueron todas sus corridas.")
+
+
 def tabla_markdown(filas):
     mejores = _mejores(filas)
     lineas = ["| Trayectoria | Algoritmo | t_captura [s] | t_asent [s] | RMSE_lat seg. [m] | RMSE_yaw seg. [rad] | θ_max [°] | S_smooth [–] | Error final [m] | Resultado | Duración [s] |",
@@ -327,13 +397,14 @@ def tabla_markdown(filas):
             if (f['resultado'] == 'completada' and (f['ruta'], col) in mejores
                     and fmt.format(mejores[(f['ruta'], col)]) == txt):
                 txt = f"**{txt}**"
+            txt += _dispersion(f, col, fmt, ' ± ')
             if col.endswith('_seg') and not f['capturada']:
                 txt += '*'
             celdas.append(txt)
         tray = ETIQUETA_RUTA_TXT.get(f['ruta'], f['ruta']) if f['ruta'] != ruta_prev else ''
         ruta_prev = f['ruta']
         lineas.append(f"| {tray} | {f['nombre']} | " + " | ".join(celdas)
-                      + f" | {RESULTADO_TXT.get(f['resultado'], f['resultado'])} | {f['duracion_s']:.1f} |")
+                      + f" | {_texto_resultado(f)} | {f['duracion_s']:.1f} |")
     notas = ["", "En negrita, el mejor valor de cada trayectoria entre las corridas completadas.",
              f"t_captura: tiempo hasta que el conjunto queda sobre la ruta (|x1| < {UMBRAL_CAPTURA_LAT_M} m "
              f"durante {VENTANA_CAPTURA_S:.0f} s seguidos). "
@@ -344,6 +415,8 @@ def tabla_markdown(filas):
              "θ_max: toda la corrida. S_smooth = 1/(N−1)·Σ|u_{k+1} − u_k|. "
              "Error final: distancia del punto de control al último punto de la ruta, ya detenido. "
              "*: el conjunto nunca entró en la banda; métrica sobre toda la corrida."]
+    if _nota_repeticiones(filas):
+        notas.append(_nota_repeticiones(filas))
     if any(f['formato'] == 'anterior' for f in filas):
         notas.append("Las corridas en formato anterior usan el error angular propio de cada controlador; "
                      "repítalas con la telemetría actual para una comparación homogénea.")
@@ -377,19 +450,21 @@ def tabla_latex(filas):
                 if (f['resultado'] == 'completada' and (ruta, col) in mejores
                         and fmt.format(mejores[(ruta, col)]) == txt):
                     txt = r"\textbf{" + txt + "}"
+                txt += _dispersion(f, col, fmt, r' $\pm$ ')
                 if col.endswith('_seg') and not f['capturada']:
                     txt += r"$^{*}$"
                 celdas.append(txt)
             tray = ETIQUETA_RUTA_TEX.get(ruta, ruta) if j == 0 else ''
             out.append(f"{tray} & {f['nombre']} & " + " & ".join(celdas)
-                       + f" & {RESULTADO_TXT.get(f['resultado'], f['resultado'])} \\\\")
+                       + f" & {_texto_resultado(f)} \\\\")
         if i < len(rutas_orden) - 1:
             out.append(r"\midrule")
     out += [r"\bottomrule", r"\end{tabular}",
             r"\par\smallskip\footnotesize En negrita, el mejor valor de cada trayectoria entre las corridas completadas. "
             r"$t_{cap}$: duración de la fase de captura; $t_{as}$: tiempo hasta quedar a menos de 5 cm de la ruta; $RMSE_{lat}$ y $RMSE_{yaw}$ se calculan solo durante el seguimiento. "
             r"$S_{smooth} = \frac{1}{N-1}\sum_k |u_{k+1}-u_k|$. $e_{fin}$: distancia final al último punto de la ruta. "
-            r"$^{*}$: el conjunto nunca entró en la banda de captura; métrica sobre toda la corrida.",
+            r"$^{*}$: el conjunto nunca entró en la banda de captura; métrica sobre toda la corrida."
+            + (" " + _nota_repeticiones(filas).replace('±', r'$\pm$') if _nota_repeticiones(filas) else ""),
             r"\end{table}"]
     return "\n".join(out) + "\n"
 
@@ -551,44 +626,59 @@ def figura_temporal(ruta, carpeta, salida, formatos, dpi, unidad='deg'):
 # =====================================================================================
 # PROGRAMA PRINCIPAL
 # =====================================================================================
-def evaluar(carpeta='.', salida='figuras/cap5', formatos=('png', 'pdf'), dpi=300, unidad='deg'):
+def evaluar(carpetas='.', salida='figuras/cap5', formatos=('png', 'pdf'), dpi=300, unidad='deg'):
+    """carpetas: una carpeta de datos o una lista (repeticiones del mismo experimento, ver el docstring)."""
+    if isinstance(carpetas, str):
+        carpetas = [carpetas]
+    carpetas = list(dict.fromkeys(carpetas))   # sin repetir la misma carpeta
     os.makedirs(salida, exist_ok=True)
     filas = []
-    print(f"Leyendo telemetría de: {os.path.abspath(carpeta)}")
-    for familia, info in FAMILIAS.items():
-        for ruta in info['rutas']:
-            for a in ALGORITMOS:
-                c = cargar_corrida(carpeta, a['clave'], ruta)
-                if c is None:
-                    continue
-                m = calcular_metricas(c)
-                filas.append(m)
-                print(f"  {m['archivo']:42s} {m['muestras']:6d} muestras @ {m['frecuencia_hz']:5.1f} Hz | "
-                      f"{RESULTADO_TXT.get(m['resultado'], m['resultado'])}{' | formato anterior' if c.legado else ''}")
+    for carpeta in carpetas:
+        print(f"Leyendo telemetría de: {os.path.abspath(carpeta)}")
+        for familia, info in FAMILIAS.items():
+            for ruta in info['rutas']:
+                for a in ALGORITMOS:
+                    c = cargar_corrida(carpeta, a['clave'], ruta)
+                    if c is None:
+                        continue
+                    m = calcular_metricas(c)
+                    if len(carpetas) > 1:
+                        m['carpeta'] = os.path.basename(os.path.normpath(carpeta))
+                    filas.append(m)
+                    print(f"  {m['archivo']:42s} {m['muestras']:6d} muestras @ {m['frecuencia_hz']:5.1f} Hz | "
+                          f"{RESULTADO_TXT.get(m['resultado'], m['resultado'])}{' | formato anterior' if c.legado else ''}")
     if not filas:
         print("No se encontró ningún archivo telemetria_<algoritmo>_<ruta>.csv.")
         return 1
 
     df_m = pd.DataFrame(filas)
     df_m.to_csv(os.path.join(salida, 'metricas.csv'), index=False)
-    md, tex = tabla_markdown(filas), tabla_latex(filas)
+    escritos = ['metricas.csv']
+    filas_tabla = filas
+    if len(carpetas) > 1:
+        filas_tabla = agregar_repeticiones(filas)
+        pd.DataFrame(filas_tabla).to_csv(os.path.join(salida, 'metricas_agregadas.csv'), index=False)
+        escritos.append('metricas_agregadas.csv')
+    md, tex = tabla_markdown(filas_tabla), tabla_latex(filas_tabla)
     with open(os.path.join(salida, 'tabla_metricas.md'), 'w', encoding='utf-8') as f:
         f.write(md)
     with open(os.path.join(salida, 'tabla_metricas.tex'), 'w', encoding='utf-8') as f:
         f.write(tex)
 
     generadas = []
+    if len(carpetas) > 1:
+        print(f"Figuras: con la primera carpeta ({carpetas[0]}).")
     for familia in FAMILIAS:
-        generadas += figura_trayectorias(familia, carpeta, salida, formatos, dpi)
+        generadas += figura_trayectorias(familia, carpetas[0], salida, formatos, dpi)
         for ruta in FAMILIAS[familia]['rutas']:
-            generadas += figura_temporal(ruta, carpeta, salida, formatos, dpi, unidad)
+            generadas += figura_temporal(ruta, carpetas[0], salida, formatos, dpi, unidad)
 
     print("\n" + "=" * 100)
     print("TABLA CONSOLIDADA DE MÉTRICAS CUANTITATIVAS")
     print("=" * 100)
     print(md)
     print(f"Archivos escritos en {os.path.abspath(salida)}:")
-    for p in ['metricas.csv', 'tabla_metricas.md', 'tabla_metricas.tex'] + [os.path.basename(g) for g in generadas]:
+    for p in escritos + ['tabla_metricas.md', 'tabla_metricas.tex'] + [os.path.basename(g) for g in generadas]:
         print(f"  {p}")
     return 0
 
@@ -598,7 +688,8 @@ def main(argv=None):
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     ap = argparse.ArgumentParser(description="Métricas, tablas y figuras del Capítulo 5.")
-    ap.add_argument('--datos', default='.', help="carpeta con telemetria_*.csv (por defecto, la actual)")
+    ap.add_argument('--datos', nargs='+', default=['.'],
+                    help="carpeta con telemetria_*.csv (por defecto, la actual); varias = repeticiones (media ± desviación)")
     ap.add_argument('--salida', default='figuras/cap5', help="carpeta de salida (por defecto figuras/cap5)")
     ap.add_argument('--formatos', nargs='+', default=['png', 'pdf'], help="formatos de figura (png pdf svg ...)")
     ap.add_argument('--dpi', type=int, default=300)

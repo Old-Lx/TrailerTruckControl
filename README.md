@@ -51,6 +51,7 @@ Rutas disponibles: `0` recta ∥ X, `1` recta ∥ Y, `2` recta x = y, `3` paráb
 En `src/main.py`: ley de dirección de marcha adelante (`proporcional` | `pure_pursuit`) y, para el LQR,
 prealimentación de curvatura, programación de ganancias en V y modo del integrador. Cada corrida guarda las
 opciones usadas en su `.json`. Para comparar variantes, córrelas en carpetas distintas y evalúa cada una con `--datos`.
+Para repeticiones del mismo caso, pasa varias carpetas a `--datos`: las tablas muestran media ± desviación.
 
 ## Identificación de la planta
 
