@@ -430,7 +430,7 @@ def main():
     inicializar_telemetria(f"telemetria_lqr_{nombre_ruta}.csv", puntos_ruta=route_points, sentido=-1,
                            punto_control='trailer', algoritmo='lqr', ruta=nombre_ruta,
                            tipo_ruta=tt.TIPO_RUTA, modo='sincrono' if tt.MODO_SINCRONO else 'libre',
-                           frecuencia_simulacion=tt.FRECUENCIA_SIMULACION,
+                           frecuencia_simulacion=tt.FRECUENCIA_SIMULACION, pasos_por_segundo=tt.PASOS_POR_SEGUNDO,
                            frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
                            if tt.MODO_SINCRONO else None,
                            prealimentacion_curvatura=PREALIMENTACION_CURVATURA,

@@ -186,10 +186,11 @@ class _Bng:
         self.planta = planta
         b = self
         self.control = types.SimpleNamespace(pause=lambda: None, resume=lambda: None, step=lambda n=1: b._step(n))
-        self.settings = types.SimpleNamespace(set_deterministic=lambda hz: None)
+        self.cuadros_por_segundo = 60
+        self.settings = types.SimpleNamespace(set_deterministic=lambda hz: setattr(b, 'cuadros_por_segundo', hz))
         self.debug = types.SimpleNamespace(add_polyline=lambda *a, **k: None)
-    def _step(self, n):                        # bng.control.step(n): avanza n pasos de la planta
-        for _ in range(int(n)): self.planta.paso()
+    def _step(self, n):                        # bng.control.step(n): n cuadros; la planta avanza de a 1/60 s
+        for _ in range(int(n) * 60 // self.cuadros_por_segundo): self.planta.paso()
     def close(self): pass
 
 

@@ -23,6 +23,9 @@ truck_trailer.TIPO_RUTA = 0
 # Modo de ejecución: síncrono (registro a 60 Hz en tiempo de simulación, control a 60/8 = 7.5 Hz)
 truck_trailer.MODO_SINCRONO = True
 truck_trailer.DECIMACION_CONTROL = 8
+# Cuadros de BeamNG por segundo: 60 = valor validado. 120 acelera ~1.5 veces pero cambia ligeramente la
+# simulación (BeamNG procesa las entradas una vez por cuadro): solo tras el A/B (ver truck_trailer.py).
+truck_trailer.PASOS_POR_SEGUNDO = 60
 # Cámaras con la ruta proyectada (solo visualización). False acelera la simulación; los datos no cambian.
 truck_trailer.CAMARAS_ACTIVAS = True
 

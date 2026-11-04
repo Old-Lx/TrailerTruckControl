@@ -60,6 +60,13 @@ REPORTE_RITMO_CADA_S = 10.0  # s de simulación
 # (corridas del 04-nov-2026). Estas dos opciones quitan esperas SIN cambiar ningún dato:
 LECTURA_CONJUNTA = True      # envía las peticiones del camión y del tráiler juntas y luego recibe (1 cuadro)
 CAMARAS_SIN_PETICION = True  # lee la imagen de la memoria compartida (Camera.stream) en vez de pedirla
+# Cuadros de BeamNG por segundo de simulación (set_deterministic). Cada muestra de telemetría (1/60 s) avanza
+# PASOS_POR_SEGUNDO / FRECUENCIA_SIMULACION cuadros; telemetría (60 Hz) y control (7.5 Hz) no cambian, pero
+# los cuadros duran menos y cada espera es más corta. Medido el 04-nov-2026 (medir_ritmo_beamng.py, con la
+# lectura conjunta): 60 -> 0.31x, 120 -> 0.47x, 240 -> 0.50x (la tarjeta llega a ~183 cuadros por segundo).
+# NO es neutro: BeamNG procesa las entradas (volante, acelerador, freno) y parte de la lógica del vehículo
+# una vez por cuadro. 60 es el valor validado; otro valor solo tras un A/B en BeamNG aprobado por el autor.
+PASOS_POR_SEGUNDO = 60       # múltiplo de FRECUENCIA_SIMULACION: 60 | 120 | 240
 # Sensor Electrics del camión: registra el comando de volante que recibió BeamNG y el ángulo real del
 # volante (en grados). Permite medir el retardo del actuador de dirección (identificación de la planta).
 REGISTRAR_VOLANTE_REAL = True
@@ -495,8 +502,11 @@ class TruckTrailer:
     def iniciar_simulacion(self, gear=None):
         """Configura el paso determinista y deja la simulación lista para el experimento.
         En modo síncrono queda en pausa (avanza con avanzar()); en modo libre corre en tiempo real."""
+        if PASOS_POR_SEGUNDO % FRECUENCIA_SIMULACION:
+            raise ValueError(f"PASOS_POR_SEGUNDO ({PASOS_POR_SEGUNDO}) debe ser múltiplo de "
+                             f"FRECUENCIA_SIMULACION ({FRECUENCIA_SIMULACION})")
         self.bng.control.pause()
-        self.bng.settings.set_deterministic(FRECUENCIA_SIMULACION)
+        self.bng.settings.set_deterministic(PASOS_POR_SEGUNDO)
         if gear is not None:
             self.truck.control(gear=gear)
         if not MODO_SINCRONO:
@@ -508,18 +518,21 @@ class TruckTrailer:
             self.avanzar(1)
             self.leer_vehiculos()
         modo = (f"SÍNCRONO: registro a {FRECUENCIA_SIMULACION} Hz, control a "
-                f"{FRECUENCIA_SIMULACION / self.decimacion_control:.1f} Hz" if MODO_SINCRONO else "LIBRE (tiempo real)")
+                f"{FRECUENCIA_SIMULACION / self.decimacion_control:.1f} Hz, {PASOS_POR_SEGUNDO} cuadros de BeamNG "
+                f"por segundo" if MODO_SINCRONO else "LIBRE (tiempo real)")
         print(f"[experimento] ruta '{self.nombre_ruta}' (TIPO_RUTA={TIPO_RUTA}) | modo {modo}")
 
     def avanzar(self, pasos=1):
-        """En modo síncrono avanza la simulación `pasos` pasos de 1/FRECUENCIA_SIMULACION s."""
+        """En modo síncrono avanza la simulación `pasos` pasos de 1/FRECUENCIA_SIMULACION s
+        (cada uno son PASOS_POR_SEGUNDO / FRECUENCIA_SIMULACION cuadros de BeamNG)."""
         if not MODO_SINCRONO:
             return
+        cuadros = pasos * (PASOS_POR_SEGUNDO // FRECUENCIA_SIMULACION)
         t_ini = time.perf_counter()
         try:
-            self.bng.control.step(pasos)       # BeamNGpy reciente
+            self.bng.control.step(cuadros)     # BeamNGpy reciente
         except AttributeError:
-            self.bng.step(pasos)               # BeamNGpy anterior
+            self.bng.step(cuadros)             # BeamNGpy anterior
         self._pasos += pasos
         r = self._ritmo
         r['step'] += time.perf_counter() - t_ini

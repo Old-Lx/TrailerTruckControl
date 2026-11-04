@@ -89,6 +89,7 @@ def main():
             w.writerow(['' if v is None else v for v in fila])
     meta = dict(resultado=resultado, muestras=len(filas), v_objetivo=V_OBJETIVO, sentido=+1,
                 modo='sincrono' if tt.MODO_SINCRONO else 'libre', frecuencia_simulacion=tt.FRECUENCIA_SIMULACION,
+                pasos_por_segundo=tt.PASOS_POR_SEGUNDO,
                 secuencia=SECUENCIA, control_velocidad=fr.MODO_CONTROL_VELOCIDAD, fecha=time.strftime('%Y-%m-%d %H:%M:%S'))
     with open(ARCHIVO.replace('.csv', '.json'), 'w', encoding='utf-8') as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)

@@ -13,8 +13,10 @@ Además comprueba que la lectura conjunta entrega exactamente los mismos valores
 separado, y proyecta el ritmo de cada configuración. No escribe archivos.
 
 Uso, desde la raíz del repositorio y con BeamNG cerrado:
-    python src/medir_ritmo_beamng.py
+    python src/medir_ritmo_beamng.py              (todo, ~3 min)
+    python src/medir_ritmo_beamng.py --comprobar  (solo la comparación de lecturas, ~1 min)
 """
+import sys
 import time
 import numpy as np
 from arx_truck_ai import truck_trailer as tt
@@ -41,18 +43,36 @@ def _copia_sensores(tr):
             for veh in (tr.truck, tr.trailer) for nombre, sensor in veh.sensors.items()}
 
 
-def _comprobar_lectura_conjunta(tr):
-    tr.bng.control.step(1)
+def _lectura_serie(tr):
     tr.truck.sensors.poll()
     tr.trailer.sensors.poll()
-    separado = _copia_sensores(tr)
+
+
+def _lectura_conjunta(tr):
     tt.LECTURA_CONJUNTA = True
     tr.leer_vehiculos()
+
+
+def _comprobar_lectura_conjunta(tr):
+    """Tras un step, lee cuatro veces sin avanzar: serie, serie, conjunta, serie. Con la simulación en pausa
+    las cuatro deberían coincidir; si solo difiere la primera, es el sensor (el Timer se actualiza un cuadro
+    después del step), no la lectura conjunta. Imprime lo que difiera."""
+    tr.bng.control.step(1)
+    lecturas = []
+    for nombre, leer in (('serie 1', _lectura_serie), ('serie 2', _lectura_serie),
+                         ('conjunta', _lectura_conjunta), ('serie 3', _lectura_serie)):
+        leer(tr)
+        lecturas.append((nombre, _copia_sensores(tr), tr.truck.sensors['timer'].get('time')))
     if not tr._lectura_conjunta_ok:
         return 'no disponible en esta versión de BeamNGpy'
-    conjunto = _copia_sensores(tr)
-    distintos = [k for k in separado if separado[k] != conjunto.get(k)]
-    return 'idénticos' if not distintos else f'DISTINTOS en {distintos}'
+    print("\nTimer tras un step, en cuatro lecturas sin avanzar: " +
+          ", ".join(f"{n} = {t}" for n, _, t in lecturas))
+    ref = lecturas[1][1]
+    for nombre, copia, _ in lecturas:
+        distintos = [k for k in ref if ref[k] != copia.get(k)]
+        print(f"  {nombre:8s} frente a serie 2: {'idéntica' if not distintos else f'difiere en {distintos}'}")
+    conj, s3 = lecturas[2][1], lecturas[3][1]
+    return 'idénticos' if conj == ref == s3 else 'DISTINTOS (ver arriba)'
 
 
 def main():
@@ -63,7 +83,7 @@ def main():
     cam = tr.front_cam
 
     resultados = {}
-    for sps in PASOS_POR_SEGUNDO:
+    for sps in (() if '--comprobar' in sys.argv else PASOS_POR_SEGUNDO):
         bng.settings.set_deterministic(sps)
         bng.control.step(10)                                    # que el límite de cuadros ya rija
         print(f"\n=== {sps} pasos por segundo ===")
@@ -95,6 +115,7 @@ def main():
               f"límite pedido {sps}) | costo fijo de step: {ordenada:.1f} ms")
         resultados[sps] = r
 
+    bng.settings.set_deterministic(60)
     print(f"\nLectura conjunta contra lecturas por separado: {_comprobar_lectura_conjunta(tr)}")
 
     # Ritmo proyectado por muestra de 1/60 s: step de k cuadros + lectura + (cámara + control) / decimación
