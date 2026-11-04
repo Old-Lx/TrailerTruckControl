@@ -54,6 +54,12 @@ LEER_IMU_LIDAR = False       # solo tiene efecto si CREAR_IMU_LIDAR = True
 CAMARAS_ACTIVAS = True
 # Reporte periódico del ritmo de la simulación (veces el tiempo real y ms por paso en cada fase); 0 = nunca
 REPORTE_RITMO_CADA_S = 10.0  # s de simulación
+# Ritmo en modo síncrono. BeamNG atiende cada petición de Python en su ciclo de cuadro (60 por segundo con
+# set_deterministic(60)), y cada petición en serie cuesta ~1 cuadro de espera: con step (2 cuadros) y la
+# lectura del camión y luego la del tráiler (1 + 1) la simulación avanzaba a 0.22 veces el tiempo real
+# (corridas del 04-nov-2026). Estas dos opciones quitan esperas SIN cambiar ningún dato:
+LECTURA_CONJUNTA = True      # envía las peticiones del camión y del tráiler juntas y luego recibe (1 cuadro)
+CAMARAS_SIN_PETICION = True  # lee la imagen de la memoria compartida (Camera.stream) en vez de pedirla
 # Sensor Electrics del camión: registra el comando de volante que recibió BeamNG y el ángulo real del
 # volante (en grados). Permite medir el retardo del actuador de dirección (identificación de la planta).
 REGISTRAR_VOLANTE_REAL = True
@@ -468,6 +474,7 @@ class TruckTrailer:
         self.imu_truck = self.imu_trailer = self.lidar_front = self.lidar_rear = None
         self.front_cam = self.reverse_cam = None
         self._ritmo = dict(step=0.0, poll=0.0, cam=0.0, pasos=0, t_reloj=None)
+        self._lectura_conjunta_ok = True    # False tras un fallo: se vuelve a los poll() por separado
 
     # ------------------------------------------------------------------ ejecución del experimento
     @property
@@ -499,8 +506,7 @@ class TruckTrailer:
             # primera lectura del Timer venía atrasada 16 pasos respecto de la segunda (primer dt de 0.27 s
             # en vez de 1/60 s); así la primera muestra ya se lee con la simulación determinista en marcha.
             self.avanzar(1)
-            self.truck.sensors.poll()
-            self.trailer.sensors.poll()
+            self.leer_vehiculos()
         modo = (f"SÍNCRONO: registro a {FRECUENCIA_SIMULACION} Hz, control a "
                 f"{FRECUENCIA_SIMULACION / self.decimacion_control:.1f} Hz" if MODO_SINCRONO else "LIBRE (tiempo real)")
         print(f"[experimento] ruta '{self.nombre_ruta}' (TIPO_RUTA={TIPO_RUTA}) | modo {modo}")
@@ -844,6 +850,52 @@ class TruckTrailer:
                 is_visualised=False
             )
 
+    def leer_vehiculos(self):
+        """Actualiza los sensores del camión y del tráiler (lo mismo que truck.sensors.poll() seguido de
+        trailer.sensors.poll()). Con LECTURA_CONJUNTA envía primero todas las peticiones y después recibe las
+        respuestas, así la espera es de un cuadro de BeamNG y no de dos. La simulación está en pausa durante
+        la lectura, por lo que los valores son los mismos que leyendo cada vehículo por separado.
+        Usa funciones internas de BeamNGpy 1.35 (Sensors._encode_requests, _send): si no existen en otra
+        versión, avisa una vez y vuelve a los poll() por separado."""
+        vehiculos = (self.truck, self.trailer)
+        if LECTURA_CONJUNTA and self._lectura_conjunta_ok:
+            try:
+                pendientes = []
+                for veh in vehiculos:
+                    s = veh.sensors
+                    motor, vehiculo = s._encode_requests(tuple(s._sensors.keys()))
+                    if motor['sensors']:
+                        pendientes.append((s, veh.bng._send(motor)))
+                    if vehiculo['sensors']:
+                        pendientes.append((s, veh._send(vehiculo)))
+            except (AttributeError, TypeError, KeyError) as e:
+                self._lectura_conjunta_ok = False
+                print(f"[experimento] aviso: lectura conjunta no disponible en esta versión de BeamNGpy "
+                      f"({type(e).__name__}); se leen el camión y el tráiler por separado")
+            else:
+                datos = {}
+                for s, resp in pendientes:
+                    datos.setdefault(id(s), (s, {}))[1].update(resp.recv('SensorData')['data'])
+                for s, d in datos.values():
+                    for nombre, valor in s._decode_response(d).items():
+                        s._sensors[nombre].replace(valor)
+                return
+        for veh in vehiculos:
+            veh.sensors.poll()
+
+    @staticmethod
+    def _imagen_camara(cam):
+        """Imagen de la cámara. Con CAMARAS_SIN_PETICION la lee de la memoria compartida (Camera.stream: la
+        última que dibujó BeamNG, sin petición); si no hay imagen todavía, la pide con poll()."""
+        if CAMARAS_SIN_PETICION:
+            try:
+                datos = cam.stream()
+                if datos.get('colour') is not None:
+                    return datos
+            except Exception:
+                pass
+        return cam.poll()
+
     # Función para leer los sensores del Truck Trailer
     def read_sensors(self, is_reverse=False, completo=True):
         """Lee el estado del conjunto. completo=False omite IMU, lidar y cámaras (no se usan en el
@@ -857,8 +909,7 @@ class TruckTrailer:
 
         # Actualizar el estado físico de los vehículos (para leer el Yaw)
         t_ini = time.perf_counter()
-        self.truck.sensors.poll()
-        self.trailer.sensors.poll()
+        self.leer_vehiculos()
         self._ritmo['poll'] += time.perf_counter() - t_ini
 
         estado_camion = self.truck.state
@@ -939,17 +990,15 @@ class TruckTrailer:
         # Cámaras (solo en lecturas completas: son lo más costoso y solo sirven para visualizar)
         if completo and self.front_cam is not None and self.reverse_cam is not None:
             t_ini = time.perf_counter()
-            # Getting camera data (usar el mismo state recién leído para sincronizar proyección)
-            reverse_cam_data = self.reverse_cam.poll()
-            front_cam_data = self.front_cam.poll()
-
-            # Pasamos el estado del camión o tráiler según corresponda
+            # Solo se lee la cámara que se muestra (antes se pedían las dos en cada ciclo de control)
             z_ruta = self._geometria['z_suelo']
             if is_reverse:
+                reverse_cam_data = self._imagen_camara(self.reverse_cam)
                 eje = self._eje_vehiculo(trailer_pos_final, -R_r[:, 0], z_ruta)   # en reversa se avanza hacia atrás
                 stream_cam(reverse_cam_data, self.route, estado_trailer, is_reverse=True,
                            pose_camara=self.pose_camara_mundo('reverse', estado_trailer), z_ruta=z_ruta, eje_vehiculo=eje)
             else:
+                front_cam_data = self._imagen_camara(self.front_cam)
                 eje = self._eje_vehiculo(truck_pos_final, R_c[:, 0], z_ruta)
                 stream_cam(front_cam_data, self.route, estado_camion, is_reverse=False,
                            pose_camara=self.pose_camara_mundo('front', estado_camion), z_ruta=z_ruta, eje_vehiculo=eje)
