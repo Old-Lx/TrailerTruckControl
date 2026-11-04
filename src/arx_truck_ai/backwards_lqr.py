@@ -43,11 +43,16 @@ KP_VELOCIDAD = 0.4       # ganancia proporcional del control de velocidad (fin_r
 # al necesario en e_ct y e_trailer, y aplicada a la planta real daba un lazo cerrado
 # inestable (polo en +0.44 1/s).
 #
-# Valores IDENTIFICADOS de la telemetría real: L1 = 2.93 m, L2 = 8.1 m, DP = 5.2 m, retardo del
-# volante = lag de 0.34 s + retardo puro de 0.32 s (≈ 0.66 s en total).
-# Valores de DISEÑO (deliberadamente PESIMISTAS: planta más inestable, volante menos eficaz,
-# más retraso). Diseñar sobre la planta pesimista es lo que da robustez: con los valores
-# identificados el diseño fallaba en ~3 % de plantas realistas; con estos, en ninguna.
+# Valores IDENTIFICADOS en BeamNG (experimento_identificacion.py + identificar_planta.py, 04-nov-2026,
+# corridas/identificacion; R² ≥ 0.99): PHI/L1 = 0.216 1/m (L1 = 2.78 m con PHI = 0.6), L2 = 6.21 m (enganche
+# desplazado M = -0.14 m: prácticamente sobre el eje), DP = 4.69 m, retardo del volante = retardo puro de
+# 0.13 s + primer orden de 0.28 s (≈ 0.41 s). Hasta entonces el código usaba 2.93 / 8.1 / 5.2 y 0.32 + 0.34 s
+# (≈ 0.66 s), de una identificación anterior sin script.
+# Valores de DISEÑO (pensados como PESIMISTAS: volante menos eficaz, más retraso). Con la identificación del
+# 04-nov el diseño sigue siendo pesimista en el retardo (0.8 s frente a 0.41 s) y en L1, pero no en L2 (6.5 m
+# frente a 6.21 m: la planta real es algo más inestable). analisis_robustez_lqr.py comprueba que la K de este
+# diseño estabiliza la planta identificada en 0.5-2.5 m/s (K programada en V) y 500 de 500 plantas con
+# PHI/L1 y L2 ±20 %, DP ±10 %, retardo y tau ±30 %; por eso la K no se rediseñó.
 # ----------------------------------------------------------------------------
 L1_NOMINAL = 3.3             # m   ganancia del volante sobre la articulación: v*PHI/L1
 L2_NOMINAL = 6.5             # m   quinta rueda -> eje del tráiler (inestabilidad: v/L2)
@@ -105,9 +110,11 @@ X3_REF_MAX_RAD = 0.25        # rad articulación de régimen máxima que se pide
                              #     vez de pedir una articulación cercana al jackknife (la senoide de R = 13.5 m
                              #     exigiría 0.54 rad = 31°). Sin límite, en el arnés la senoide terminaba en
                              #     jackknife; con 0.25-0.35 rad no. Ajustable tras las pruebas en BeamNG.
-L1_IDENT = 2.93              # m   parámetros identificados (estado de régimen de la prealimentación)
-L2_IDENT = 8.1               # m
-DP_IDENT = 5.2               # m
+L1_IDENT = 2.78              # m   parámetros identificados (estado de régimen de la prealimentación),
+L2_IDENT = 6.21              # m   identificación del 04-nov-2026 (ver arriba); antes 2.93 / 8.1 / 5.2
+DP_IDENT = 4.69              # m
+RETARDO_PURO_IDENT = 0.13    # s   retardo del volante identificado (comando -> giro del tractor)
+TAU_IDENT = 0.28             # s
 
 PROGRAMACION_EN_V = True
 PUNTOS_OPERACION_V = (0.5, 1.0, 1.5, 2.0, 2.5)   # m/s

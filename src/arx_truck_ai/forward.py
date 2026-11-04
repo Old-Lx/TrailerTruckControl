@@ -26,7 +26,7 @@ MARGEN_PARADA = 0.5      # m     margen extra antes del punto final
 # equivalente de Pure Pursuit es 2*L1/(L*PHI_MAX) = 0.81, menor que KP_STEER = 1.2.
 LEY_DIRECCION = 'proporcional'
 KP_STEER = 1.2
-L1_TRACTOR = 2.93        # m    batalla efectiva del tractor (identificada, ver backwards_lqr.py)
+L1_TRACTOR = 2.78        # m    batalla efectiva del tractor (identificada el 04-nov-2026, ver backwards_lqr.py)
 PHI_MAX_RAD = 0.6        # rad  ángulo de rueda con |steering| = 1 (supuesto, mismo que el LQR)
 KP_VELOCIDAD = 0.5       # ganancia proporcional del control de velocidad (fin_ruta.ControlVelocidad)
 

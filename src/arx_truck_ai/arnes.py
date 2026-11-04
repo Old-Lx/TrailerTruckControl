@@ -9,8 +9,9 @@ arnes.py - Arnés de integración SIN BeamNG (verificación del pipeline del Cap
 
 ¿Cómo lo hace?
     Reemplaza BeamNG por un simulador falso: un modelo cinemático tractor-remolque con los parámetros
-    identificados (L1 = 2.93 m, L2 = 8.08 m, dp = 5.2 m) y el retardo de la dirección (retardo puro de
-    0.32 s + primer orden de 0.34 s). Los controladores no saben que no es BeamNG.
+    identificados en BeamNG el 04-nov-2026 (L1 = 2.78 m con 0.6 rad de rueda por unidad de volante, L2 = 6.21 m,
+    dp = 4.69 m) y el retardo de la dirección (retardo puro de 0.13 s + primer orden de 0.28 s). Los controladores
+    no saben que no es BeamNG.
 
 IMPORTANTE: los CSV y las figuras que produce son SINTÉTICOS. Sirven para validar el software,
             NO son resultados de la tesis.
@@ -59,9 +60,9 @@ tt.cv2.waitKey = lambda *a, **k: None
 # 2. PLANTA CINEMÁTICA (sustituye la física de BeamNG)
 # =====================================================================================
 DT = 1.0 / tt.FRECUENCIA_SIMULACION   # paso de integración = paso de simulación (1/60 s)
-L1, L2, DP = 2.93, 8.08, 5.2          # modelo identificado de la telemetría de BeamNG (script de identificación pendiente): batalla, enganche-eje tráiler, eje-punto medido
-DELTA_MAX = 0.55                      # rad de rueda con |steering| = 1
-TAU, RETARDO = 0.34, 0.32             # dinámica de la dirección: primer orden + retardo puro [s]
+L1, L2, DP = 2.78, 6.21, 4.69         # identificados en BeamNG (04-nov-2026): batalla, enganche-eje tráiler, eje-punto medido
+DELTA_MAX = 0.6                       # rad de rueda con |steering| = 1 (solo DELTA_MAX/L1 = 0.216 1/m es identificable)
+TAU, RETARDO = 0.28, 0.13             # dinámica de la dirección: primer orden + retardo puro [s] (identificados)
 OFF_TRUCK = 0.14                      # state['pos'] del camión, adelante del enganche
 LAT_TRAILER = -0.949                  # state['pos'] del tráiler, 0.949 m a la DERECHA de su eje (como en BeamNG)
 

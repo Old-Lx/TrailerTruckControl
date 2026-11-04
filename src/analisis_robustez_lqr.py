@@ -46,8 +46,9 @@ def planta_desde_json(ruta):
 
 
 def planta_del_codigo():
-    """Parámetros identificados que usa hoy el código (comentarios de backwards_lqr.py y arnés)."""
-    return dict(k=lqr.PHI_MAX_RAD / lqr.L1_IDENT, L2=lqr.L2_IDENT, DP=lqr.DP_IDENT, retardo=0.32, tau=0.34)
+    """Parámetros identificados que usa hoy el código (backwards_lqr.py)."""
+    return dict(k=lqr.PHI_MAX_RAD / lqr.L1_IDENT, L2=lqr.L2_IDENT, DP=lqr.DP_IDENT,
+                retardo=lqr.RETARDO_PURO_IDENT, tau=lqr.TAU_IDENT)
 
 
 def radio_espectral(K, v, planta):
