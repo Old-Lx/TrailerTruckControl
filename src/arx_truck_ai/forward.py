@@ -173,7 +173,7 @@ def main():
                            frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
                            if tt.MODO_SINCRONO else None,
                            ley_direccion=LEY_DIRECCION, v_crucero=V_CRUCERO,
-                           control_velocidad=fr.MODO_CONTROL_VELOCIDAD)
+                           control_velocidad=fr.MODO_CONTROL_VELOCIDAD, antiwindup_arranque=fr.ANTIWINDUP_ARRANQUE)
 
     # Estado del lazo
     previous_truck_roll = None   # None: en el primer ciclo la tasa de roll es 0 (no se deriva contra 0)

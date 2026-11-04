@@ -116,7 +116,7 @@ PUNTOS_OPERACION_V = (0.5, 1.0, 1.5, 2.0, 2.5)   # m/s
 # justo cuando el error inicial es máximo (capturas de 90°); en el arnés eso subía la articulación máxima
 # de 38° a 55°. La velocidad objetivo vale V_CRUCERO al arrancar y baja suavemente en la llegada.
 
-MODO_INTEGRADOR = 'original'  # 'original' | 'corregido'
+MODO_INTEGRADOR = 'corregido'  # 'corregido' (por defecto desde el 04-nov-2026, decisión del autor) | 'original'
 BANDA_INTEGRADOR_M = 0.5
 LIMITE_ACCION_INTEGRAL = 0.15  # aporte máximo del integrador al volante normalizado
 
@@ -435,7 +435,7 @@ def main():
                            if tt.MODO_SINCRONO else None,
                            prealimentacion_curvatura=PREALIMENTACION_CURVATURA,
                            programacion_en_v=PROGRAMACION_EN_V, modo_integrador=MODO_INTEGRADOR,
-                           control_velocidad=fr.MODO_CONTROL_VELOCIDAD)
+                           control_velocidad=fr.MODO_CONTROL_VELOCIDAD, antiwindup_arranque=fr.ANTIWINDUP_ARRANQUE)
 
     t0 = None
     t_ultimo_control = None

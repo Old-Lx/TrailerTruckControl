@@ -43,6 +43,14 @@ MODO_CONTROL_VELOCIDAD = 'pi'    # 'pi' | 'original' (comparación A/B; ver docs
 KI_VELOCIDAD = 0.15              # 1/s por m/s: el integrador aprende el acelerador de régimen (Ti = kp/ki)
 BANDA_FRENO = 0.2                # m/s: el freno solo actúa si el vehículo va más rápido que esto sobre el objetivo
 INTEGRADOR_MAX = 0.6             # tope del término integral (acelerador)
+# Anti-windup del arranque (04-nov-2026). En BeamNG el camión no se mueve durante ~1.2 s con el acelerador a
+# fondo (engrana el embrague): con e ≈ 2 m/s el integrador llegaba a ~0.3-0.4 cuando el régimen pide ~0.055, y
+# como la rama de freno no lo descargaba, el conjunto iba a 2.2-2.45 m/s frenando a pulsos durante ~20 s
+# (adelante) y ~45 s (reversa) en las corridas del 30-oct y 04-nov. Con ANTIWINDUP_ARRANQUE el integrador solo
+# acumula con |e| < BANDA_INTEGRACION y también se descarga mientras frena en crucero.
+# False = PI del 30-oct (comparación A/B).
+ANTIWINDUP_ARRANQUE = True
+BANDA_INTEGRACION = 0.3          # m/s
 
 
 def _acumuladas(ruta):
@@ -108,6 +116,8 @@ class ControlVelocidad:
         throttle = clip(I + kp*e, 0, 1);  I += ki*e*dt solo si la acción no está saturada en el
                    sentido de e (anti-windup por integración condicional), con I en [0, INTEGRADOR_MAX]
         brake    = kb*(|e| - BANDA_FRENO) si e < -BANDA_FRENO (y entonces throttle = 0); kb = 0.5*kp
+        Con ANTIWINDUP_ARRANQUE (desde el 04-nov) I solo acumula con |e| < BANDA_INTEGRACION y también se
+        descarga mientras frena en crucero (ver la constante).
     En crucero I converge al acelerador que mantiene la velocidad y la acción es continua: no hay relé.
     Con v_obj por debajo de la velocidad de crucero (perfil de llegada o atenuación por roll) se trata
     de bajar la velocidad: si e < 0 se frena como en la ley original (sin banda muerta, throttle = 0);
@@ -131,9 +141,13 @@ class ControlVelocidad:
         if e < 0 and v_obj < self.v_crucero - 1e-6:          # llegada o atenuación: bajar la velocidad
             return 0.0, float(np.clip(-0.5 * self.kp * e, 0.0, 1.0))
         if e < -BANDA_FRENO:
+            if ANTIWINDUP_ARRANQUE:                          # va rápido: el integrador también baja
+                self.integrador = float(np.clip(self.integrador + KI_VELOCIDAD * e * (dt or 0.0), 0.0, INTEGRADOR_MAX))
             return 0.0, float(np.clip(0.5 * self.kp * (-e - BANDA_FRENO), 0.0, 1.0))
         u = self.integrador + self.kp * e
-        if (0.0 < u < 1.0) or (u >= 1.0 and e < 0) or (u <= 0.0 and e > 0):
+        if ANTIWINDUP_ARRANQUE and abs(e) >= BANDA_INTEGRACION:
+            pass                                             # arranque o error grande: no se integra
+        elif (0.0 < u < 1.0) or (u >= 1.0 and e < 0) or (u <= 0.0 and e > 0):
             self.integrador = float(np.clip(self.integrador + KI_VELOCIDAD * e * (dt or 0.0), 0.0, INTEGRADOR_MAX))
         return float(np.clip(self.integrador + self.kp * e, 0.0, 1.0)), 0.0
 

@@ -39,7 +39,7 @@ fwd.LEY_DIRECCION = 'proporcional'
 # LQR (ver MEJORAS DE OCT-2026 en backwards_lqr.py)
 bwd_lqr.PREALIMENTACION_CURVATURA = True    # False = LQR hasta oct-2026 (regula hacia x = 0)
 bwd_lqr.PROGRAMACION_EN_V = True            # False = K fija en V0 = 2 m/s
-bwd_lqr.MODO_INTEGRADOR = 'original'        # 'original' | 'corregido'
+bwd_lqr.MODO_INTEGRADOR = 'corregido'       # 'corregido' (anti-windup, por defecto) | 'original' (casi sin acción integral)
 
 if __name__ == "__main__":
     {'forward': fwd.main, 'backward': bwd.main, 'lqr': bwd_lqr.main}[ALGORITMO]()

@@ -92,7 +92,7 @@ ALGORITMO = 'lqr'                # 'forward' | 'backward' | 'lqr'
 fwd.LEY_DIRECCION = 'proporcional'          # marcha adelante: 'proporcional' | 'pure_pursuit'
 bwd_lqr.PREALIMENTACION_CURVATURA = True    # LQR
 bwd_lqr.PROGRAMACION_EN_V = True            # LQR
-bwd_lqr.MODO_INTEGRADOR = 'original'        # LQR: 'original' | 'corregido'
+bwd_lqr.MODO_INTEGRADOR = 'corregido'       # LQR: 'corregido' (por defecto) | 'original'
 ```
 Las rutas 1, 2 y 4 empiezan desalineadas con el vehículo a propósito (prueba de captura).
 
@@ -108,6 +108,8 @@ cd ..\..
 ### 4.3 Qué pasa durante la corrida
 1. Se abre BeamNG.tech (tarda ~1 min), se carga el mapa `smallgrid`, aparecen camión y tráiler y se acoplan.
 2. En la consola se imprime el reporte de calibración de cámaras y el modo (síncrono: telemetría a 60 Hz, control a 7.5 Hz).
+   Antes de la primera muestra el conjunto espera quieto con freno de mano (`[experimento] conjunto en reposo tras ... s`;
+   `truck_trailer.ESPERAR_REPOSO`), para que todas las corridas partan del mismo estado.
 3. Se abre la ventana de la cámara (frontal en marcha adelante, trasera en reversa) con la ruta en verde.
    En el mundo 3D la ruta se ve en magenta.
 4. Al terminar (fin de ruta, jackknife o 300 s) se muestra la gráfica de respuesta y la consola pide
@@ -133,6 +135,15 @@ python src\evaluacion_resultados.py --datos corridas\prueba --salida corridas\pr
 Genera `metricas.csv`, `tabla_metricas.md`, `tabla_metricas.tex` y las figuras `trayectoria_*_xy` y
 `respuestas_temporales_comparativas_*` (PNG y PDF). Opciones: `--formatos png pdf svg`, `--dpi 300`,
 `--unidad-articulacion rad`.
+
+**Repeticiones.** Las corridas de BeamNG no se repiten exactamente, así que cada caso se corre varias veces,
+una carpeta por repetición, y se evalúan juntas:
+```powershell
+python src\evaluacion_resultados.py --datos corridas\campana_r1 corridas\campana_r2 corridas\campana_r3 --salida corridas\campana_out
+```
+Además de `metricas.csv` (una fila por corrida, con su carpeta) escribe `metricas_agregadas.csv` (media,
+desviación estándar y número de valores por caso), y las tablas muestran media ± desviación. Las figuras se
+dibujan con la primera carpeta.
 
 Los resultados que se usen en la tesis se copian a `resultados/` (sí se versiona).
 

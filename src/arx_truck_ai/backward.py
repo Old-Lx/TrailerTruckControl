@@ -372,7 +372,7 @@ def main():
                            frecuencia_simulacion=tt.FRECUENCIA_SIMULACION, pasos_por_segundo=tt.PASOS_POR_SEGUNDO,
                            frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
                            if tt.MODO_SINCRONO else None,
-                           control_velocidad=fr.MODO_CONTROL_VELOCIDAD)
+                           control_velocidad=fr.MODO_CONTROL_VELOCIDAD, antiwindup_arranque=fr.ANTIWINDUP_ARRANQUE)
 
     # Variables de estado inicial para el subsistema derivativo del jackknifing y roll.
     # None: en el primer ciclo de control las derivadas valen 0 (antes se derivaba contra 0 y, si el

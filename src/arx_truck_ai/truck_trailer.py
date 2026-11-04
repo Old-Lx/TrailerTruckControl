@@ -67,6 +67,16 @@ CAMARAS_SIN_PETICION = True  # lee la imagen de la memoria compartida (Camera.st
 # NO es neutro: BeamNG procesa las entradas (volante, acelerador, freno) y parte de la lógica del vehículo
 # una vez por cuadro. 60 es el valor validado; otro valor solo tras un A/B en BeamNG aprobado por el autor.
 PASOS_POR_SEGUNDO = 60       # múltiplo de FRECUENCIA_SIMULACION: 60 | 120 | 240
+# Arranque en reposo (solo modo síncrono). bng_open.main() acopla el conjunto con la simulación corriendo libre
+# en tiempo real, así que al pasar a modo determinista el camión todavía se movía (0.036 m/s) y el estado de
+# partida dependía del reloj de pared: dos corridas iguales del 04-nov-2026 difirieron desde la primera muestra.
+# Con ESPERAR_REPOSO, iniciar_simulacion() pone el freno de mano y avanza la simulación determinista hasta que
+# camión y tráiler queden quietos, y lo suelta antes de la primera muestra. (Pausar antes del acople impide que
+# el camión se conecte al tráiler: se descartó.) Si no se alcanza el reposo en REPOSO_MAXIMO_S, avisa y sigue.
+ESPERAR_REPOSO = True
+REPOSO_V_MAX = 0.01          # m/s: velocidad máxima de camión y tráiler para considerarlos quietos
+REPOSO_SOSTENIDO_S = 1.0     # s seguidos por debajo de REPOSO_V_MAX
+REPOSO_MAXIMO_S = 10.0       # s de simulación
 # Sensor Electrics del camión: registra el comando de volante que recibió BeamNG y el ángulo real del
 # volante (en grados). Permite medir el retardo del actuador de dirección (identificación de la planta).
 REGISTRAR_VOLANTE_REAL = True
@@ -507,6 +517,8 @@ class TruckTrailer:
                              f"FRECUENCIA_SIMULACION ({FRECUENCIA_SIMULACION})")
         self.bng.control.pause()
         self.bng.settings.set_deterministic(PASOS_POR_SEGUNDO)
+        if MODO_SINCRONO and ESPERAR_REPOSO:
+            self._esperar_reposo()
         if gear is not None:
             self.truck.control(gear=gear)
         if not MODO_SINCRONO:
@@ -521,6 +533,32 @@ class TruckTrailer:
                 f"{FRECUENCIA_SIMULACION / self.decimacion_control:.1f} Hz, {PASOS_POR_SEGUNDO} cuadros de BeamNG "
                 f"por segundo" if MODO_SINCRONO else "LIBRE (tiempo real)")
         print(f"[experimento] ruta '{self.nombre_ruta}' (TIPO_RUTA={TIPO_RUTA}) | modo {modo}")
+
+    def _esperar_reposo(self):
+        """Freno de mano y simulación determinista hasta que camión y tráiler queden quietos (ver ESPERAR_REPOSO).
+        Avanza de a 0.1 s; no cuenta en los pasos del experimento ni en el reporte de ritmo."""
+        self.truck.control(steering=0.0, throttle=0.0, brake=0.0, parkingbrake=1)
+        pasos = max(1, FRECUENCIA_SIMULACION // 10)
+        cuadros = pasos * (PASOS_POR_SEGUNDO // FRECUENCIA_SIMULACION)
+        dt = pasos / FRECUENCIA_SIMULACION
+        esperado = sostenido = 0.0
+        v_max = float('inf')
+        while esperado < REPOSO_MAXIMO_S and sostenido < REPOSO_SOSTENIDO_S - 1e-9:
+            try:
+                self.bng.control.step(cuadros)     # BeamNGpy reciente
+            except AttributeError:
+                self.bng.step(cuadros)             # BeamNGpy anterior
+            esperado += dt
+            self.leer_vehiculos()
+            v_max = max(float(np.linalg.norm(self.truck.state['vel'])),
+                        float(np.linalg.norm(self.trailer.state['vel'])))
+            sostenido = sostenido + dt if v_max < REPOSO_V_MAX else 0.0
+        self.truck.control(parkingbrake=0)
+        if sostenido >= REPOSO_SOSTENIDO_S - 1e-9:
+            print(f"[experimento] conjunto en reposo tras {esperado:.1f} s con freno de mano (v = {v_max:.4f} m/s)")
+        else:
+            print(f"[experimento] aviso: sin reposo tras {esperado:.1f} s (v = {v_max:.4f} m/s > {REPOSO_V_MAX}); "
+                  f"se sigue igual")
 
     def avanzar(self, pasos=1):
         """En modo síncrono avanza la simulación `pasos` pasos de 1/FRECUENCIA_SIMULACION s
