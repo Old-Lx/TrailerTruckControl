@@ -75,7 +75,7 @@ PASOS_POR_SEGUNDO = 60       # múltiplo de FRECUENCIA_SIMULACION: 60 | 120 | 24
 # 4 -> 0.62x, 8 -> 0.73x. Lo único que cambia es el corte por jackknife, que se revisa en cada muestra: se
 # detecta hasta n - 1 pasos después. La parada final (fin_ruta.detener_en_fin) sigue a 60 Hz. Debe dividir a
 # DECIMACION_CONTROL. (Ni speedFactor ni quitar el límite de cuadros sirven: cambian el tiempo por cuadro.)
-DECIMACION_TELEMETRIA = 1    # 1 (60 Hz) | 2 (30 Hz) | 4 (15 Hz) | 8 (7.5 Hz)
+DECIMACION_TELEMETRIA = 8    # 8 (7.5 Hz, por defecto desde el 04-nov-2026, decisión del autor) | 4 (15 Hz) | 2 (30 Hz) | 1 (60 Hz)
 # Arranque en reposo (solo modo síncrono). bng_open.main() acopla el conjunto con la simulación corriendo libre
 # en tiempo real, así que al pasar a modo determinista el camión todavía se movía (0.036 m/s) y el estado de
 # partida dependía del reloj de pared: dos corridas iguales del 04-nov-2026 difirieron desde la primera muestra.
