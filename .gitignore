@@ -221,3 +221,6 @@ __marimo__/
 
 # Corridas de trabajo (los resultados de la tesis se copian a resultados/)
 /corridas/
+
+# Figuras que exporta matlab/modelaje.m (se regeneran con el script)
+/matlab/figuras/

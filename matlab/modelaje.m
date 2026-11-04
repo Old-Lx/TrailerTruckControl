@@ -1,11 +1,21 @@
 % =========================================================================
 % ANÁLISIS DE SISTEMA CAMIÓN-TRÁILER (MARCHA ADELANTE Y RETROCESO)
 % Script para calcular los modelos de estado, funciones de transferencia,
-% análisis de polos, gráficas de incertidumbre paramétrica, regiones de 
+% análisis de polos, gráficas de incertidumbre paramétrica, regiones de
 % diseño para Loop Shaping y validación de modelado.
+%
+% Las secciones 1-7 usan el MODELO NOMINAL PRELIMINAR de 3 estados (V0 = 2 m/s,
+% D0 = 5 m, ruedas sin retardo): es el análisis del Capítulo 3 previo a la
+% identificación. La sección 8 compara con el MODELO DE DISEÑO de 5 estados del
+% LQR implementado (backwards_lqr.py), con los parámetros identificados en
+% BeamNG (04-nov-2026). La sección 9 es el diseño preliminar LQR + observador,
+% que NO se implementó. Las figuras se exportan a matlab/figuras (300 dpi) con
+% los nombres que usa el libro (figuras/cap3/).
 % =========================================================================
 
 clear; clc; close all;
+DIR_FIGURAS = fullfile(fileparts(mfilename('fullpath')), 'figuras');
+if ~exist(DIR_FIGURAS, 'dir'), mkdir(DIR_FIGURAS); end
 
 %% DEFINICIÓN DE PARÁMETROS NOMINALES
 V0 = 2.0; % Magnitud de velocidad nominal [m/s]
@@ -44,6 +54,19 @@ disp('Modelo Nominal (Marcha en Retroceso) G_bwd(s):');
 tf_bwd
 disp('Polos (Retroceso):');
 disp(pole(sys_bwd)); % Mostrará 0, 0, y +0.4 (Polo Inestable)
+
+%% VERIFICACIONES ESTRUCTURALES (valores citados en el Capítulo 3)
+% Marcha adelante: el doble autovalor en 0 tiene un solo autovector (rango(A) = 2),
+% es decir, un bloque de Jordan de orden 2: NO es marginalmente estable.
+fprintf('rango(A_fwd) = %d, rango(A_bwd) = %d (3 - rango = autovectores del autovalor 0)\n', ...
+        rank(A_fwd), rank(A_bwd));
+x_lib = expm(A_fwd * 100) * [0; 0.01; 0];
+fprintf('Marcha adelante, x2(0) = 0.01 rad: x1(100 s) = %.2f m (deriva lineal)\n', x_lib(1));
+Ck = ctrb(A_bwd, B_bwd);
+Ok = obsv(A_bwd, C);
+disp('Matriz de controlabilidad (retroceso) [B AB A^2B]:'); disp(Ck);
+fprintf('det(Ck) = %.2f, rango(Ck) = %d, rango(Ok) = %d\n', det(Ck), rank(Ck), rank(Ok));
+fprintf('Ceros de G_bwd: %d (no es de fase no mínima)\n', numel(tzero(sys_bwd)));
 
 %% ANÁLISIS DE VARIACIÓN DE PARÁMETROS INCIERTOS (RETROCESO)
 V_min = 0.9 * V0; V_max = 1.1 * V0;
@@ -162,19 +185,34 @@ grid on;
 hold off;
 
 %% RESPUESTA AL ESCALÓN EN LAZO ABIERTO
-figure('Name', 'Respuesta al Escalón (Lazo Abierto)', 'NumberTitle', 'off');
-t_sim = 0:0.05:8; 
+% Arriba el error lateral (salida): crece en ambos sentidos de marcha, de forma
+% polinómica hacia adelante (integradores) y exponencial en retroceso. Abajo la
+% articulación: acotada hacia adelante (polo en -V/D), divergente en retroceso.
+fig_escalon = figure('Name', 'Respuesta al Escalón (Lazo Abierto)', 'NumberTitle', 'off');
+t_sim = 0:0.05:8;
+C_theta = [0, 0, 1];
 [y_fwd, t_fwd] = step(sys_fwd, t_sim);
 [y_bwd, t_bwd] = step(sys_bwd, t_sim);
+th_fwd = step(ss(A_fwd, B_fwd, C_theta, 0), t_sim);
+th_bwd = step(ss(A_bwd, B_bwd, C_theta, 0), t_sim);
 
+subplot(2, 1, 1);
 plot(t_fwd, y_fwd, 'b', 'LineWidth', 2); hold on;
 plot(t_bwd, y_bwd, 'r', 'LineWidth', 2);
-title('Respuesta al Escalón en Lazo Abierto (Entrada u=1)');
-xlabel('Tiempo [s]');
+title('Respuesta al Escalón en Lazo Abierto (curvatura u = 1)');
 ylabel('Error Lateral y_2 [m]');
-legend('Marcha hacia adelante (Marginalmente estable)', 'Marcha en retroceso (Inestable - Efecto Tijera)', 'Location', 'NorthWest');
-grid on;
-hold off;
+legend('Marcha hacia adelante (crecimiento polinómico)', 'Marcha en retroceso (divergencia exponencial)', ...
+       'Location', 'SouthWest');
+grid on; hold off;
+
+subplot(2, 1, 2);
+plot(t_fwd, th_fwd, 'b', 'LineWidth', 2); hold on;
+plot(t_bwd, th_bwd, 'r', 'LineWidth', 2);
+xlabel('Tiempo [s]');
+ylabel('Articulación \theta [rad]');
+legend('Marcha hacia adelante (acotada: polo en -V/D)', 'Marcha en retroceso (polo en +V/D: jackknife)', ...
+       'Location', 'SouthWest');
+grid on; hold off;
 
 %% VALIDACIÓN DE EQUIVALENCIA: P^a vs P^o
 % Forma Canónica de Observabilidad extraída de tu documento
@@ -211,9 +249,54 @@ h_rlocus = findobj(gca, 'Type', 'line');
 set(h_rlocus, 'LineWidth', 2);
 grid on;
 
-%% DISEÑO DEL CONTROLADOR (LQR + INTEGRAL + OBSERVADOR)
+% Routh-Hurwitz para u = -Kp*x1: s^3 - 0.4 s^2 - 1.6 Kp = 0 nunca es Hurwitz
+% (coeficiente de s^2 negativo y de s nulo). Raíces para algunos Kp:
+for Kp = [-2, -0.5, 0.1, 1, 10]
+    r = roots([1, -0.4, 0, -1.6*Kp]);
+    fprintf('Kp = %5.1f: raíces %s\n', Kp, mat2str(round(r.', 3)));
+end
+
+%% MODELO DE DISEÑO DE 5 ESTADOS (LQR IMPLEMENTADO, backwards_lqr.py)
+% Estados: x1 error lateral del punto medido, x2 error angular, x3 articulación,
+% x4 integral de x1, x5 posición real del volante (primer orden de constante tau).
+% Entrada: comando de volante normalizado s en [-1, 1]. Mismas ecuaciones que
+% _construir_modelo() en backwards_lqr.py.
 disp('======================================================');
-disp('   DISEÑO DE CONTROLADOR DE ORDEN COMPLETO (RETROCESO)');
+disp('   MODELO DE DISEÑO DE 5 ESTADOS (RETROCESO, V = 2 m/s)');
+disp('======================================================');
+PHI_MAX = 0.6;                                  % rad de rueda con |s| = 1
+par_ident  = struct('L1', 2.78, 'L2', 6.21, 'DP', 4.69, 'tau', 0.13 + 0.28);  % BeamNG, 04-nov-2026
+par_diseno = struct('L1', 3.3,  'L2', 6.5,  'DP', 5.2,  'tau', 0.8);          % diseño (pesimista)
+[A5_id, ~]  = modelo_5_estados(V0, par_ident, PHI_MAX);
+[A5, B5]    = modelo_5_estados(V0, par_diseno, PHI_MAX);
+fprintf('Polos en lazo abierto, parámetros identificados: %s\n', mat2str(round(eig(A5_id).', 3)));
+fprintf('Polos en lazo abierto, parámetros de diseño:     %s\n', mat2str(round(eig(A5).', 3)));
+% Pesos del LQR en |x3| = 0 (backwards_lqr.py: Q_X1, Q_X2, Q33_BASE, Q_X4, Q_X5 y R_MAX)
+Q5 = diag([0.5, 5.0, 0.5, 0.05, 0.5]);
+R5 = 15.0;
+K5 = lqr(A5, B5, Q5, R5);
+fprintf('K (V = 2 m/s, |x3| = 0): %s  (Python: [-0.755 9.288 5.761 -0.058 1.094])\n', mat2str(round(K5, 3)));
+polos_lc = eig(A5 - B5*K5);
+fprintf('Polos en lazo cerrado del modelo de diseño: %s\n', mat2str(round(polos_lc.', 3)));
+
+fig_polos = figure('Name', 'Polos del modelo de diseño', 'NumberTitle', 'off');
+plot(real(eig(A5)), imag(eig(A5)), 'kx', 'MarkerSize', 12, 'LineWidth', 2); hold on;
+plot(real(eig(A5_id)), imag(eig(A5_id)), 'bx', 'MarkerSize', 10, 'LineWidth', 1.5);
+plot(real(polos_lc), imag(polos_lc), 'ro', 'MarkerSize', 9, 'LineWidth', 2);
+xline(0, 'k:');
+xlabel('Parte real [1/s]'); ylabel('Parte imaginaria [rad/s]');
+title('Modelo de diseño de 5 estados en retroceso (V = 2 m/s)');
+legend('Lazo abierto, parámetros de diseño', 'Lazo abierto, parámetros identificados', ...
+       'Lazo cerrado con el LQR (diseño)', 'Location', 'SouthWest');
+ylim([-0.45, 0.45]);
+grid on; hold off;
+
+%% DISEÑO PRELIMINAR DEL CONTROLADOR (LQR + INTEGRAL + OBSERVADOR) - NO IMPLEMENTADO
+% Diseño sobre el modelo nominal de 3 estados. No funcionó en BeamNG (no modela el
+% retardo de la dirección ni el punto medido desplazado) y fue reemplazado por el
+% LQR de 5 estados de la sección anterior. Se conserva como antecedente.
+disp('======================================================');
+disp('   DISEÑO PRELIMINAR DE ORDEN COMPLETO (RETROCESO)');
 disp('======================================================');
 
 % Planteamiento del Sistema Aumentado con Integrador
@@ -283,4 +366,32 @@ fprintf('Tiempo de Establecimiento (ts): %.2f s\n', step_info.SettlingTime);
 fprintf('Error en Estado Estacionario (ess): %.4f\n', 1 - y_cl(end));
 
 disp('======================================================');
-disp('Gráficas generadas exitosamente.');
+
+%% EXPORTACIÓN DE FIGURAS (nombres de figuras/cap3/ del libro)
+exportgraphics(findobj('Type', 'figure', 'Name', 'Bode de la familia de plantas'), ...
+               fullfile(DIR_FIGURAS, '2_uncertainty_Bode.png'), 'Resolution', 300);
+exportgraphics(findobj('Type', 'figure', 'Name', 'Error Relativo (Plantas vs Nominal)'), ...
+               fullfile(DIR_FIGURAS, '3_errores_relativos.png'), 'Resolution', 300);
+exportgraphics(findobj('Type', 'figure', 'Name', 'Regiones de Loop Shaping'), ...
+               fullfile(DIR_FIGURAS, '4_regiones_prohibidas.png'), 'Resolution', 300);
+exportgraphics(fig_escalon, fullfile(DIR_FIGURAS, '5_step_response_open_loop.png'), 'Resolution', 300);
+exportgraphics(findobj('Type', 'figure', 'Name', 'Equivalencia Dinámica P^a vs P^o'), ...
+               fullfile(DIR_FIGURAS, '6_step_pa_vs_po.png'), 'Resolution', 300);
+exportgraphics(findobj('Type', 'figure', 'Name', 'Lugar Geométrico de las Raíces (Retroceso)'), ...
+               fullfile(DIR_FIGURAS, '7_root_locus.png'), 'Resolution', 300);
+exportgraphics(fig_polos, fullfile(DIR_FIGURAS, '12_polos_modelo_diseno.png'), 'Resolution', 300);
+disp(['Gráficas generadas y exportadas en ', DIR_FIGURAS]);
+
+%% FUNCIONES LOCALES
+function [A, B] = modelo_5_estados(v, p, phi_max)
+% Modelo de diseño de 5 estados del LQR en retroceso (backwards_lqr._construir_modelo).
+    A = zeros(5);
+    A(1, 2) = -v;
+    A(1, 3) = v * p.DP / p.L2;
+    A(2, 3) = v / p.L2;
+    A(3, 3) = v / p.L2;
+    A(3, 5) = v * phi_max / p.L1;
+    A(4, 1) = 1;
+    A(5, 5) = -1 / p.tau;
+    B = [0; 0; 0; 0; 1 / p.tau];
+end
