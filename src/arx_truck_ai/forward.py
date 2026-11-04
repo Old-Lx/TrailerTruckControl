@@ -170,6 +170,7 @@ def main():
                            punto_control='tractor', algoritmo='forward', ruta=nombre_ruta,
                            tipo_ruta=tt.TIPO_RUTA, modo='sincrono' if tt.MODO_SINCRONO else 'libre',
                            frecuencia_simulacion=tt.FRECUENCIA_SIMULACION, pasos_por_segundo=tt.PASOS_POR_SEGUNDO,
+                           decimacion_telemetria=tt.DECIMACION_TELEMETRIA,
                            frecuencia_control=tt.FRECUENCIA_SIMULACION / truck_trailer.decimacion_control
                            if tt.MODO_SINCRONO else None,
                            ley_direccion=LEY_DIRECCION, v_crucero=V_CRUCERO,
@@ -242,8 +243,9 @@ def main():
             resultado, info_fin = 'tiempo_maximo', dict(sobrepaso_m=sobrepaso, distancia_final_m=d_fin)
             break
 
-        truck_trailer.avanzar()      # modo síncrono: un paso de simulación (1/60 s); modo libre: nada
-        ciclo += 1
+        # modo síncrono: pasos_por_muestra pasos de 1/60 s (DECIMACION_TELEMETRIA); modo libre: nada
+        truck_trailer.avanzar(truck_trailer.pasos_por_muestra)
+        ciclo += truck_trailer.pasos_por_muestra
 
     finalizar_telemetria(resultado, **info_fin)
     truck_trailer.liberar_simulacion()

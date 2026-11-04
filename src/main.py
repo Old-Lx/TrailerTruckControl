@@ -26,6 +26,9 @@ truck_trailer.DECIMACION_CONTROL = 8
 # Cuadros de BeamNG por segundo: 60 = valor validado. 120 acelera ~1.5 veces pero cambia ligeramente la
 # simulación (BeamNG procesa las entradas una vez por cuadro): solo tras el A/B (ver truck_trailer.py).
 truck_trailer.PASOS_POR_SEGUNDO = 60
+# Telemetría cada n pasos: 1 = 60 Hz (0.32x tiempo real) | 2 = 30 Hz (0.47x) | 4 = 15 Hz (0.62x) | 8 = 7.5 Hz (0.73x).
+# La física no cambia (ver truck_trailer.DECIMACION_TELEMETRIA); solo hay menos filas en el CSV.
+truck_trailer.DECIMACION_TELEMETRIA = 1
 # Cámaras con la ruta proyectada (solo visualización). False acelera la simulación; los datos no cambian.
 truck_trailer.CAMARAS_ACTIVAS = True
 

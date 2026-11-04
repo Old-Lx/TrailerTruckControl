@@ -110,6 +110,9 @@ cd ..\..
 2. En la consola se imprime el reporte de calibración de cámaras y el modo (síncrono: telemetría a 60 Hz, control a 7.5 Hz).
    Antes de la primera muestra el conjunto espera quieto con freno de mano (`[experimento] conjunto en reposo tras ... s`;
    `truck_trailer.ESPERAR_REPOSO`), para que todas las corridas partan del mismo estado.
+   Ritmo: con la telemetría a 60 Hz la simulación va a ~0.32 veces el tiempo real (al terminar se reanuda y va a 1x,
+   porque ya no hay peticiones por cuadro). `truck_trailer.DECIMACION_TELEMETRIA` = 4 (15 Hz) u 8 (7.5 Hz) la lleva a
+   0.62x / 0.73x con la misma física; solo hay menos filas en el CSV.
 3. Se abre la ventana de la cámara (frontal en marcha adelante, trasera en reversa) con la ruta en verde.
    En el mundo 3D la ruta se ve en magenta.
 4. Al terminar (fin de ruta, jackknife o 300 s) se muestra la gráfica de respuesta y la consola pide

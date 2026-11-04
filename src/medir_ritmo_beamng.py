@@ -12,9 +12,22 @@ abre el mismo escenario que los experimentos, con el camión detenido y el freno
 Además comprueba que la lectura conjunta entrega exactamente los mismos valores que las dos lecturas por
 separado, y proyecta el ritmo de cada configuración. No escribe archivos.
 
+Con --factor mide, con el Timer (de a 60 cuadros), cuánto tiempo simulado avanza cada cuadro en otras
+configuraciones, y el ritmo con la telemetría registrada cada n cuadros (truck_trailer.DECIMACION_TELEMETRIA).
+steps_per_second es en realidad el límite de cuadros gráficos de BeamNG (mensaje FPSLimit) y en modo
+determinista cada cuadro avanza 1/límite s: por eso un cuadro dura 16.7 ms de reloj con 60. Medido el
+04-nov-2026 (RTX 3050 Ti):
+  - sin limitador (remove_step_limit): 216 cuadros por segundo, pero cada cuadro avanza el tiempo real que
+    tardó (4.3 ± 0.8 ms): deja de ser determinista. Descartado.
+  - speedFactor = k (con --speedfactor): cada cuadro avanza 50·k ms en vez de 16.7 y el ritmo empeora
+    (0.33x -> 0.19x con k = 4). Descartado.
+  - telemetría cada 1 / 2 / 4 / 8 cuadros (misma física): 0.32x / 0.47x / 0.62x / 0.73x.
+
 Uso, desde la raíz del repositorio y con BeamNG cerrado:
     python src/medir_ritmo_beamng.py              (todo, ~3 min)
     python src/medir_ritmo_beamng.py --comprobar  (solo la comparación de lecturas, ~1 min)
+    python src/medir_ritmo_beamng.py --factor     (configuraciones de cuadros y telemetría cada n cuadros, ~2 min;
+                                                   --speedfactor agrega speedFactor 1..4)
 """
 import sys
 import time
@@ -23,6 +36,7 @@ from arx_truck_ai import truck_trailer as tt
 from arx_truck_ai import bng_open
 
 PASOS_POR_SEGUNDO = (60, 120, 240)
+FACTORES_VELOCIDAD = (1, 2, 3, 4)
 REPETICIONES = 100
 DECIMACION_CONTROL = 8          # muestras de telemetría (1/60 s) por actualización del control
 
@@ -75,12 +89,69 @@ def _comprobar_lectura_conjunta(tr):
     return 'idénticos' if conj == ref == s3 else 'DISTINTOS (ver arriba)'
 
 
+def _tiempo_timer(tr):
+    """Timer de BeamNG [s]. Se lee dos veces: el Timer se actualiza un cuadro después del step."""
+    tr.leer_vehiculos()
+    tr.leer_vehiculos()
+    return float(tr.truck.sensors['timer']['time'])
+
+
+def _probar_factor(tr):
+    """Para cada configuración: tiempo simulado por cuadro (Timer, 5 tandas de 60 cuadros), duración de un
+    cuadro de reloj y ritmo proyectado del lazo (step(1) + lectura conjunta por muestra de 1/60 s)."""
+    bng = tr.bng
+    tt.LECTURA_CONJUNTA = True
+    print("\n=== Configuraciones de cuadros (para que los datos no cambien, cada cuadro debe avanzar 16.667 ms"
+          " simulados, igual que la base) ===")
+    configuraciones = [('base (actual)', lambda: bng.settings.set_deterministic(60)),
+                       ('sin limitador', lambda: (bng.settings.set_deterministic(60), bng.settings.remove_step_limit()))]
+    if '--speedfactor' in sys.argv:
+        configuraciones += [(f'speedFactor {k}', lambda k=k: bng.settings.set_deterministic(60 * k, speed_factor=k))
+                            for k in FACTORES_VELOCIDAD]
+    for nombre, configurar in configuraciones:
+        configurar()
+        bng.control.step(10)                                    # que el límite de cuadros ya rija
+        dts = []
+        for _ in range(5):
+            t0 = _tiempo_timer(tr)
+            bng.control.step(60)
+            dts.append((_tiempo_timer(tr) - t0) / 60)
+        s1 = _cronometrar(lambda: bng.control.step(1), 40)[0]
+        s8 = _cronometrar(lambda: bng.control.step(8), 40)[0]
+        cuadro = (s8 - s1) / 7
+        muestra = s1 + _cronometrar(tr.leer_vehiculos, 40)[0]
+        print(f"  {nombre:14s} cada cuadro avanza {1e3 * np.mean(dts):7.3f} ms simulados "
+              f"(desv. {1e3 * np.std(dts):.3f}) | cuadro de reloj {cuadro:5.1f} ms ({1e3 / cuadro:4.0f} por s) | "
+              f"step(1) + lectura {muestra:5.1f} ms -> {1e3 / 60 / muestra:.2f}x tiempo real")
+
+    # Telemetría a menos de 60 Hz con la misma física: un step(n) y una lectura cada n cuadros, más el control
+    # (una petición) cada 8 cuadros. Los comandos cambian en los mismos cuadros que hoy.
+    bng.settings.set_deterministic(60)
+    bng.control.step(10)
+    lectura = _cronometrar(tr.leer_vehiculos, 40)[0]
+    control = _cronometrar(lambda: tr.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=1), 40)[0]
+    print("\n=== Base con la telemetría registrada cada n cuadros (física idéntica) ===")
+    for n in (1, 2, 4, 8):
+        paso = _cronometrar(lambda n=n: bng.control.step(n), 40)[0]
+        ciclo = (8 // n) * (paso + lectura) + control             # un ciclo de control = 8 cuadros = 0.133 s
+        print(f"  cada {n} cuadro(s) -> telemetría a {60 // n:2d} Hz: {ciclo:6.1f} ms por ciclo de control "
+              f"-> {1e3 * 8 / 60 / ciclo:.2f}x tiempo real")
+    bng.settings.set_deterministic(60)
+
+
 def main():
     tr, _ = bng_open.main('fwd')
     bng = tr.bng
     tr.truck.control(steering=0.0, throttle=0.0, brake=1.0, parkingbrake=1)
     bng.control.pause()
     cam = tr.front_cam
+
+    if '--factor' in sys.argv:
+        _probar_factor(tr)
+        tr.liberar_simulacion()
+        input('\nPresione enter para cerrar BeamNG...')
+        bng.close()
+        return
 
     resultados = {}
     for sps in (() if '--comprobar' in sys.argv else PASOS_POR_SEGUNDO):

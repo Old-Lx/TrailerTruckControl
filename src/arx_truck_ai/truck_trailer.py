@@ -67,6 +67,15 @@ CAMARAS_SIN_PETICION = True  # lee la imagen de la memoria compartida (Camera.st
 # NO es neutro: BeamNG procesa las entradas (volante, acelerador, freno) y parte de la lógica del vehículo
 # una vez por cuadro. 60 es el valor validado; otro valor solo tras un A/B en BeamNG aprobado por el autor.
 PASOS_POR_SEGUNDO = 60       # múltiplo de FRECUENCIA_SIMULACION: 60 | 120 | 240
+# Telemetría cada DECIMACION_TELEMETRIA pasos (1 = 60 Hz). Con 60 cuadros por segundo BeamNG avanza 1/60 s por
+# cuadro y cada cuadro dura 16.7 ms de reloj; cada muestra cuesta ~3 cuadros (step + confirmación + lectura),
+# de ahí el ritmo de 0.32x. Leyendo cada n pasos (un step(n) y una lectura) la física es IDÉNTICA: los mismos
+# cuadros, los mismos comandos en los mismos cuadros (el control va cada DECIMACION_CONTROL pasos), y solo hay
+# menos filas en el CSV. Medido el 04-nov-2026 (medir_ritmo_beamng.py --factor): 1 -> 0.32x, 2 -> 0.47x,
+# 4 -> 0.62x, 8 -> 0.73x. Lo único que cambia es el corte por jackknife, que se revisa en cada muestra: se
+# detecta hasta n - 1 pasos después. La parada final (fin_ruta.detener_en_fin) sigue a 60 Hz. Debe dividir a
+# DECIMACION_CONTROL. (Ni speedFactor ni quitar el límite de cuadros sirven: cambian el tiempo por cuadro.)
+DECIMACION_TELEMETRIA = 1    # 1 (60 Hz) | 2 (30 Hz) | 4 (15 Hz) | 8 (7.5 Hz)
 # Arranque en reposo (solo modo síncrono). bng_open.main() acopla el conjunto con la simulación corriendo libre
 # en tiempo real, así que al pasar a modo determinista el camión todavía se movía (0.036 m/s) y el estado de
 # partida dependía del reloj de pared: dos corridas iguales del 04-nov-2026 difirieron desde la primera muestra.
@@ -505,6 +514,11 @@ class TruckTrailer:
         return max(1, int(DECIMACION_CONTROL)) if MODO_SINCRONO else 1
 
     @property
+    def pasos_por_muestra(self):
+        """Pasos de simulación entre dos muestras de telemetría (1 en modo libre)."""
+        return max(1, int(DECIMACION_TELEMETRIA)) if MODO_SINCRONO else 1
+
+    @property
     def dt_control(self):
         """Período nominal del control [s] en modo síncrono (None en modo libre)."""
         return self.decimacion_control / FRECUENCIA_SIMULACION if MODO_SINCRONO else None
@@ -515,6 +529,9 @@ class TruckTrailer:
         if PASOS_POR_SEGUNDO % FRECUENCIA_SIMULACION:
             raise ValueError(f"PASOS_POR_SEGUNDO ({PASOS_POR_SEGUNDO}) debe ser múltiplo de "
                              f"FRECUENCIA_SIMULACION ({FRECUENCIA_SIMULACION})")
+        if self.decimacion_control % self.pasos_por_muestra:
+            raise ValueError(f"DECIMACION_TELEMETRIA ({DECIMACION_TELEMETRIA}) debe dividir a "
+                             f"DECIMACION_CONTROL ({DECIMACION_CONTROL})")
         self.bng.control.pause()
         self.bng.settings.set_deterministic(PASOS_POR_SEGUNDO)
         if MODO_SINCRONO and ESPERAR_REPOSO:
@@ -529,7 +546,7 @@ class TruckTrailer:
             # en vez de 1/60 s); así la primera muestra ya se lee con la simulación determinista en marcha.
             self.avanzar(1)
             self.leer_vehiculos()
-        modo = (f"SÍNCRONO: registro a {FRECUENCIA_SIMULACION} Hz, control a "
+        modo = (f"SÍNCRONO: registro a {FRECUENCIA_SIMULACION / self.pasos_por_muestra:g} Hz, control a "
                 f"{FRECUENCIA_SIMULACION / self.decimacion_control:.1f} Hz, {PASOS_POR_SEGUNDO} cuadros de BeamNG "
                 f"por segundo" if MODO_SINCRONO else "LIBRE (tiempo real)")
         print(f"[experimento] ruta '{self.nombre_ruta}' (TIPO_RUTA={TIPO_RUTA}) | modo {modo}")
