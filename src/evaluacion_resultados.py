@@ -48,9 +48,13 @@ seguir la ruta (SEGUIMIENTO). Para no mezclar ambas cosas en un solo RMSE:
     t_captura    duración de la captura [s];  d_captura: distancia recorrida por el punto de control [m];
                  theta_max_captura: articulación máxima durante la captura [°].
     RMSE_lat_seg, RMSE_yaw_seg, theta_max_seg: las mismas métricas solo sobre el seguimiento.
-    t_asent      tiempo de asentamiento: igual que t_captura pero con la banda fina UMBRAL_ASENTAMIENTO_M
-                 (5 cm). Mide la convergencia cuando la corrida empieza cerca de la ruta (p. ej. recta_x
-                 arranca con ~0.4 m de error lateral, dentro de la banda de captura: t_captura = 0).
+    t_asent      tiempo de asentamiento (definición clásica): instante desde el cual |x1| < UMBRAL_ASENTAMIENTO_M
+                 (5 cm) se cumple sin volver a salir hasta el final de la corrida, es decir, el último ingreso a
+                 la banda. Si ese último tramo dura menos de VENTANA_CAPTURA_S, o la corrida termina fuera de la
+                 banda, queda vacío (NaN: no se asentó). Mide la convergencia cuando la corrida empieza cerca de
+                 la ruta (p. ej. recta_x arranca con ~0.4 m de error lateral, dentro de la banda de captura:
+                 t_captura = 0). Hasta el 04-nov-2026 era el PRIMER ingreso que duraba 3 s, como t_captura: una
+                 corrida que salía y volvía a la banda hasta los 95 s daba t_asent = 15 s.
     Si la corrida nunca entra en la banda (p. ej. un controlador que recorta las curvas de la senoide más de
     0.5 m), t_captura queda vacío (NaN) y las métricas de "seguimiento" se calculan sobre toda la corrida
     (columna capturada = False; en las tablas se marcan con *).
@@ -253,6 +257,16 @@ def indice_fin_captura(t, e_lat, banda=UMBRAL_CAPTURA_LAT_M):
     return None
 
 
+def indice_asentamiento(t, e_lat, banda=UMBRAL_ASENTAMIENTO_M):
+    """Índice del último ingreso a la banda |e_lat| < banda sin volver a salir (ver docstring); None si la
+    corrida termina fuera de la banda o el último tramo dentro dura menos de VENTANA_CAPTURA_S."""
+    fuera = np.flatnonzero(~(np.abs(e_lat) < banda))
+    i = int(fuera[-1]) + 1 if len(fuera) else 0
+    if i >= len(t) or t[-1] - t[i] < VENTANA_CAPTURA_S:
+        return None
+    return i
+
+
 def calcular_metricas(c):
     df = c.df
     t = df['t'].to_numpy(dtype=float)
@@ -261,7 +275,7 @@ def calcular_metricas(c):
     delta_deg = np.abs(df['delta_F2'].to_numpy(dtype=float)) * 180.0 / math.pi
     x, y = c.xy_control()
     i_cap = indice_fin_captura(t, e_lat)
-    i_asent = indice_fin_captura(t, e_lat, UMBRAL_ASENTAMIENTO_M)
+    i_asent = indice_asentamiento(t, e_lat)
     if i_cap is None:
         t_cap = d_cap = th_cap = float('nan')
         rmse_lat_seg, rmse_yaw_seg, th_seg = rmse(e_lat), rmse(e_ang), float(np.nanmax(delta_deg))
@@ -408,7 +422,7 @@ def tabla_markdown(filas):
     notas = ["", "En negrita, el mejor valor de cada trayectoria entre las corridas completadas.",
              f"t_captura: tiempo hasta que el conjunto queda sobre la ruta (|x1| < {UMBRAL_CAPTURA_LAT_M} m "
              f"durante {VENTANA_CAPTURA_S:.0f} s seguidos). "
-             f"t_asent: lo mismo con |x1| < {UMBRAL_ASENTAMIENTO_M} m (—: nunca). "
+             f"t_asent: desde cuándo |x1| < {UMBRAL_ASENTAMIENTO_M} m sin volver a salir (—: nunca). "
              "RMSE_lat/RMSE_yaw seg.: solo después de la captura. "
              "RMSE_lat: punto de control (tractor en marcha adelante, remolque en reversa). "
              "RMSE_yaw: error angular del remolque respecto de la tangente de la ruta. "
@@ -461,7 +475,7 @@ def tabla_latex(filas):
             out.append(r"\midrule")
     out += [r"\bottomrule", r"\end{tabular}",
             r"\par\smallskip\footnotesize En negrita, el mejor valor de cada trayectoria entre las corridas completadas. "
-            r"$t_{cap}$: duración de la fase de captura; $t_{as}$: tiempo hasta quedar a menos de 5 cm de la ruta; $RMSE_{lat}$ y $RMSE_{yaw}$ se calculan solo durante el seguimiento. "
+            r"$t_{cap}$: duración de la fase de captura; $t_{as}$: instante desde el cual el error lateral queda a menos de 5 cm de la ruta sin volver a salir; $RMSE_{lat}$ y $RMSE_{yaw}$ se calculan solo durante el seguimiento. "
             r"$S_{smooth} = \frac{1}{N-1}\sum_k |u_{k+1}-u_k|$. $e_{fin}$: distancia final al último punto de la ruta. "
             r"$^{*}$: el conjunto nunca entró en la banda de captura; métrica sobre toda la corrida."
             + (" " + _nota_repeticiones(filas).replace('±', r'$\pm$') if _nota_repeticiones(filas) else ""),
