@@ -89,7 +89,7 @@ El `.env` se encuentra aunque el programa se ejecute desde una subcarpeta (se bu
 truck_trailer.TIPO_RUTA = 0      # 0 recta_x | 1 recta_y | 2 recta_diagonal | 3 parabola_x | 4 parabola_y | 5 seno_x | 6 seno_y
 ALGORITMO = 'lqr'                # 'forward' | 'backward' | 'lqr'
 
-fwd.LEY_DIRECCION = 'proporcional'          # marcha adelante: 'proporcional' | 'pure_pursuit'
+fwd.LEY_DIRECCION = 'pure_pursuit'          # marcha adelante: 'pure_pursuit' (por defecto) | 'proporcional'
 bwd_lqr.PREALIMENTACION_CURVATURA = True    # LQR
 bwd_lqr.PROGRAMACION_EN_V = True            # LQR
 bwd_lqr.MODO_INTEGRADOR = 'corregido'       # LQR: 'corregido' (por defecto) | 'original'

@@ -23,8 +23,10 @@ MARGEN_PARADA = 0.5      # m     margen extra antes del punto final
 #   'pure_pursuit'  delta = atan(2*L1*sin(eta)/L);  steering = -delta / PHI_MAX_RAD   (Pure Pursuit clásico)
 # eta es el ángulo entre el rumbo del tractor y la recta al punto objetivo; L la distancia a ese punto.
 # Para ángulos pequeños las dos son proporcionales a eta; con L = 12 m (lookahead a 2 m/s) la ganancia
-# equivalente de Pure Pursuit es 2*L1/(L*PHI_MAX) = 0.81, menor que KP_STEER = 1.2.
-LEY_DIRECCION = 'proporcional'
+# equivalente de Pure Pursuit es 2*L1/(L*PHI_MAX) = 0.77, menor que KP_STEER = 1.2.
+# Por defecto 'pure_pursuit' desde el 07-nov-2026 (decisión del autor tras el A/B en BeamNG del 04-nov:
+# -44 % de RMSE lateral en la parábola y volante 2-5 veces más suave; captura ~2 s más lenta).
+LEY_DIRECCION = 'pure_pursuit'
 KP_STEER = 1.2
 L1_TRACTOR = 2.78        # m    batalla efectiva del tractor (identificada el 04-nov-2026, ver backwards_lqr.py)
 PHI_MAX_RAD = 0.6        # rad  ángulo de rueda con |steering| = 1 (supuesto, mismo que el LQR)

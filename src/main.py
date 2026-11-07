@@ -37,8 +37,8 @@ ALGORITMO = 'backward'   # 'forward' | 'backward' | 'lqr'
 # ---- Opciones de los controladores (valores por defecto = los del módulo) ----------------------------
 # Control de velocidad, común a los tres: 'pi' (desde oct-2026) | 'original' (P con 0.1 fijo: ciclo límite)
 fin_ruta.MODO_CONTROL_VELOCIDAD = 'pi'
-# Marcha adelante: 'proporcional' (ley validada hasta oct-2026) | 'pure_pursuit' (Pure Pursuit clásico)
-fwd.LEY_DIRECCION = 'proporcional'
+# Marcha adelante: 'pure_pursuit' (Pure Pursuit clásico, por defecto desde el A/B del 04-nov) | 'proporcional'
+fwd.LEY_DIRECCION = 'pure_pursuit'
 # LQR (ver MEJORAS DE OCT-2026 en backwards_lqr.py)
 bwd_lqr.PREALIMENTACION_CURVATURA = True    # False = LQR hasta oct-2026 (regula hacia x = 0)
 bwd_lqr.PROGRAMACION_EN_V = True            # False = K fija en V0 = 2 m/s
