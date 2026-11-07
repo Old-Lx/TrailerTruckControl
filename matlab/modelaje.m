@@ -199,7 +199,7 @@ th_bwd = step(ss(A_bwd, B_bwd, C_theta, 0), t_sim);
 subplot(2, 1, 1);
 plot(t_fwd, y_fwd, 'b', 'LineWidth', 2); hold on;
 plot(t_bwd, y_bwd, 'r', 'LineWidth', 2);
-title('Respuesta al Escalón en Lazo Abierto (curvatura u = 1)');
+title('Respuesta al Escalón en Lazo Abierto (curvatura \kappa = 1 m^{-1})');
 ylabel('Error Lateral y_2 [m]');
 legend('Marcha hacia adelante (crecimiento polinómico)', 'Marcha en retroceso (divergencia exponencial)', ...
        'Location', 'SouthWest');
