@@ -321,7 +321,9 @@ def agregar_repeticiones(filas):
     """Una fila por caso (ruta × algoritmo × ley) con la media y la desviación estándar muestral de cada
     métrica entre sus repeticiones. Los valores no finitos (p. ej. t_captura de una corrida que nunca entró en
     la banda) no entran en la media; <métrica>_n dice cuántos entraron. El caso cuenta como 'completada' solo
-    si lo fueron todas sus corridas, y como capturado solo si lo fueron todas."""
+    si lo fueron todas sus corridas, y como capturado solo si lo fueron todas. Si la captura es mixta (unas
+    corridas entran en la banda y otras no), las métricas de seguimiento (*_seg) de TODAS se toman sobre la
+    corrida completa: promediar un RMSE posterior a la captura con uno de toda la corrida no tiene sentido."""
     orden_ruta = [r for info in FAMILIAS.values() for r in info['rutas']]
     orden_alg = [a['clave'] for a in ALGORITMOS]
     grupos = {}
@@ -331,6 +333,9 @@ def agregar_repeticiones(filas):
     for (ruta, alg, nombre) in sorted(grupos, key=lambda k: (orden_ruta.index(k[0]), orden_alg.index(k[1]), k[2])):
         grupo = grupos[(ruta, alg, nombre)]
         n = len(grupo)
+        if 0 < sum(f['capturada'] for f in grupo) < n:
+            grupo = [dict(f, rmse_lat_seg=f['rmse_lat'], rmse_yaw_seg=f['rmse_yaw'],
+                          theta_max_seg_deg=f['theta_max_deg']) for f in grupo]
         resultados = [f['resultado'] for f in grupo]
         distintos = sorted(set(resultados), key=resultados.index)
         if len(distintos) == 1:
@@ -384,6 +389,12 @@ def _dispersion(f, col, fmt, signo):
     return f"{signo}{fmt.format(sd)}" if np.isfinite(sd) else ''
 
 
+def _conteo_parcial(f, col):
+    """' (k/n)' cuando la métrica solo existe en k de las n corridas del caso (p. ej. t_captura)."""
+    k, n = f.get(col + '_n'), f.get('n')
+    return f" ({k}/{n})" if k is not None and n is not None and 0 < k < n else ''
+
+
 def _texto_resultado(f):
     return f.get('resultado_txt') or RESULTADO_TXT.get(f['resultado'], f['resultado'])
 
@@ -411,7 +422,7 @@ def tabla_markdown(filas):
             if (f['resultado'] == 'completada' and (f['ruta'], col) in mejores
                     and fmt.format(mejores[(f['ruta'], col)]) == txt):
                 txt = f"**{txt}**"
-            txt += _dispersion(f, col, fmt, ' ± ')
+            txt += _dispersion(f, col, fmt, ' ± ') + _conteo_parcial(f, col)
             if col.endswith('_seg') and not f['capturada']:
                 txt += '*'
             celdas.append(txt)
@@ -428,7 +439,8 @@ def tabla_markdown(filas):
              "RMSE_yaw: error angular del remolque respecto de la tangente de la ruta. "
              "θ_max: toda la corrida. S_smooth = 1/(N−1)·Σ|u_{k+1} − u_k|. "
              "Error final: distancia del punto de control al último punto de la ruta, ya detenido. "
-             "*: el conjunto nunca entró en la banda; métrica sobre toda la corrida."]
+             "*: el conjunto nunca entró en la banda (en al menos una corrida del caso); métrica sobre toda la corrida. "
+             "(k/n): la métrica solo existe en k de las n corridas; la media es sobre esas k."]
     if _nota_repeticiones(filas):
         notas.append(_nota_repeticiones(filas))
     if any(f['formato'] == 'anterior' for f in filas):
@@ -464,7 +476,7 @@ def tabla_latex(filas):
                 if (f['resultado'] == 'completada' and (ruta, col) in mejores
                         and fmt.format(mejores[(ruta, col)]) == txt):
                     txt = r"\textbf{" + txt + "}"
-                txt += _dispersion(f, col, fmt, r' $\pm$ ')
+                txt += _dispersion(f, col, fmt, r' $\pm$ ') + _conteo_parcial(f, col)
                 if col.endswith('_seg') and not f['capturada']:
                     txt += r"$^{*}$"
                 celdas.append(txt)
@@ -477,7 +489,8 @@ def tabla_latex(filas):
             r"\par\smallskip\footnotesize En negrita, el mejor valor de cada trayectoria entre las corridas completadas. "
             r"$t_{cap}$: duración de la fase de captura; $t_{as}$: instante desde el cual el error lateral queda a menos de 5 cm de la ruta sin volver a salir; $RMSE_{lat}$ y $RMSE_{yaw}$ se calculan solo durante el seguimiento. "
             r"$S_{smooth} = \frac{1}{N-1}\sum_k |u_{k+1}-u_k|$. $e_{fin}$: distancia final al último punto de la ruta. "
-            r"$^{*}$: el conjunto nunca entró en la banda de captura; métrica sobre toda la corrida."
+            r"$^{*}$: el conjunto nunca entró en la banda de captura (en al menos una corrida del caso); métrica sobre toda la corrida. "
+            r"$(k/n)$: la métrica solo existe en $k$ de las $n$ corridas."
             + (" " + _nota_repeticiones(filas).replace('±', r'$\pm$') if _nota_repeticiones(filas) else ""),
             r"\end{table}"]
     return "\n".join(out) + "\n"
@@ -622,7 +635,7 @@ def figura_temporal(ruta, carpeta, salida, formatos, dpi, unidad='deg'):
                      xytext=(-4, 3), textcoords='offset points', ha='right', va='bottom', fontsize=7.5, color=TINTA_2)
     lim = max(UMBRAL_JACKKNIFE_RAD * k * 1.08, ax2.get_ylim()[1], -ax2.get_ylim()[0])
     ax2.set_ylim(-lim, lim)
-    ax2.set_ylabel(f'Articulación $\\delta_{{F2}}$ {u_txt}')
+    ax2.set_ylabel(f'Articulación $\\theta$ {u_txt}')
     for s in (1.0, -1.0):
         ax3.axhline(s, color=TINTA_2, lw=0.8, ls=':', zorder=1)
     ax3.axhline(0.0, color=TINTA_2, lw=0.8, zorder=1)
