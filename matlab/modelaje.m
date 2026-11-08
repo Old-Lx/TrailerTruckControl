@@ -16,6 +16,10 @@
 clear; clc; close all;
 DIR_FIGURAS = fullfile(fileparts(mfilename('fullpath')), 'figuras');
 if ~exist(DIR_FIGURAS, 'dir'), mkdir(DIR_FIGURAS); end
+% Estilo común: tamaño de figura fijo para que las fuentes queden legibles en el libro a 300 dpi
+set(groot, 'defaultFigurePosition', [100 100 820 500], 'defaultFigureColor', 'w', ...
+    'defaultAxesFontSize', 11, 'defaultLineLineWidth', 1.5, 'defaultLegendFontSize', 10);
+ALTO_DOBLE = 680;   % alto de las figuras de dos paneles [px]
 
 %% DEFINICIÓN DE PARÁMETROS NOMINALES
 V0 = 2.0; % Magnitud de velocidad nominal [m/s]
@@ -75,41 +79,44 @@ D_min = 0.9 * D0; D_max = 1.1 * D0;
 V_vals = linspace(V_min, V_max, 5);
 D_vals = linspace(D_min, D_max, 5);
 
-figure('Name', 'Bode de la familia de plantas', 'NumberTitle', 'off');
-hold on;
-w = logspace(-2, 2, 500); 
+fig_bode_familia = figure('Name', 'Bode de la familia de plantas', 'NumberTitle', 'off');
+fig_bode_familia.Position(4) = ALTO_DOBLE;
+w = logspace(-2, 2, 500);
 
-colores = jet(25); 
-idx = 1;           
+colores = jet(25);
+idx = 1;
+ax_mag = subplot(2, 1, 1); hold(ax_mag, 'on');
+ax_fase = subplot(2, 1, 2); hold(ax_fase, 'on');
 
 for i = 1:length(V_vals)
     for j = 1:length(D_vals)
         v = V_vals(i);
         d = D_vals(j);
-        
+
         A_unc = [0, -v, 0; 0, 0, -v/d; 0, 0, v/d];
         B_unc = [0; 0; -v];
         sys_unc = ss(A_unc, B_unc, C, D_mat);
-        
-        old_lines = findobj(gcf, 'Type', 'line');
-        bode(sys_unc, w); 
-        
-        new_lines = setdiff(findobj(gcf, 'Type', 'line'), old_lines);
-        set(new_lines, 'Color', colores(idx, :), 'LineStyle', '--');
-        
-        idx = idx + 1; 
+
+        [mag_u, fase_u] = bode(sys_unc, w);
+        h_fam = plot(ax_mag, w, 20*log10(squeeze(mag_u)), '--', 'Color', colores(idx, :), 'LineWidth', 1);
+        plot(ax_fase, w, squeeze(fase_u), '--', 'Color', colores(idx, :), 'LineWidth', 1);
+
+        idx = idx + 1;
     end
 end
 
-% Dibujamos el nominal, buscamos las líneas nuevas y las configuramos
-old_lines = findobj(gcf, 'Type', 'line');
-bode(sys_bwd, w); 
-new_lines = setdiff(findobj(gcf, 'Type', 'line'), old_lines);
-set(new_lines, 'Color', 'r', 'LineWidth', 3);
+[mag_n, fase_n] = bode(sys_bwd, w);
+h_nom = plot(ax_mag, w, 20*log10(squeeze(mag_n)), 'r', 'LineWidth', 2.5);
+plot(ax_fase, w, squeeze(fase_n), 'r', 'LineWidth', 2.5);
 
-title('Diagrama de Bode: Familia de Plantas (Retroceso) vs. Modelo Nominal');
-grid on;
-hold off;
+set([ax_mag, ax_fase], 'XScale', 'log', 'XLim', [w(1), w(end)]);
+grid(ax_mag, 'on'); grid(ax_fase, 'on');
+title(ax_mag, 'Familia de plantas en retroceso (V y L_2 \pm10 %) y modelo nominal');
+ylabel(ax_mag, 'Magnitud [dB]');
+ylabel(ax_fase, 'Fase [°]');
+xlabel(ax_fase, 'Frecuencia [rad/s]');
+legend(ax_mag, [h_fam, h_nom], {'Plantas con V y L_2 \pm10 %', 'Modelo nominal G_{bwd}(s)'}, 'Location', 'SouthWest');
+hold(ax_mag, 'off'); hold(ax_fase, 'off');
 
 %% ERROR RELATIVO POR INCERTIDUMBRE MULTIPLICATIVA
 figure('Name', 'Error Relativo (Plantas vs Nominal)', 'NumberTitle', 'off');
@@ -135,7 +142,7 @@ for i = 1:length(V_vals)
         error_relativo = abs(mag_unc - mag_nom) ./ mag_nom;
         
         % Guardamos el identificador (handle) de la última línea dibujada
-        h_err = plot(w, error_relativo, 'Color', colores(idx, :), 'LineStyle', '--');
+        h_err = plot(w, error_relativo, 'Color', colores(idx, :), 'LineStyle', '--', 'LineWidth', 1);
         
         max_error_rel = max(max_error_rel, error_relativo);
         idx = idx + 1;
@@ -148,12 +155,12 @@ Wm = 0.16 * (0.1*s + 1)/(0.01*s + 1);
 
 [mag_Wm, ~] = bode(Wm, w);
 % Guardamos el identificador de la curva límite
-h_wm = plot(w, squeeze(mag_Wm), 'r', 'LineWidth', 3);
+h_wm = plot(w, squeeze(mag_Wm), 'r', 'LineWidth', 2.5);
 set(gca, 'XScale', 'log', 'YScale', 'log');
 
 title('Error Relativo y Cota Superior (W_m)');
 ylabel('Magnitud del Error Relativo');
-xlabel('Frecuencia (rad/s)');
+xlabel('Frecuencia [rad/s]');
 
 legend([h_err, h_wm], 'Familia de Errores Inciertos \Delta_{rel}', 'Cota Superior W_m(s)', 'Location', 'NorthWest');
 
@@ -175,6 +182,8 @@ h_wm_inv = loglog(w, squeeze(mag_Wm_inv), 'r--', 'LineWidth', 2);
 h_bwd = loglog(w, squeeze(mag_bwd), 'k', 'LineWidth', 2);
 
 title('Fronteras de Loop Shaping: Desempeño vs Robustez');
+xlabel('Frecuencia [rad/s]');
+ylabel('Magnitud');
 
 % Leyenda 
 legend([h_wd, h_wm_inv, h_bwd], ...
@@ -187,8 +196,9 @@ hold off;
 %% RESPUESTA AL ESCALÓN EN LAZO ABIERTO
 % Arriba el error lateral (salida): crece en ambos sentidos de marcha, de forma
 % polinómica hacia adelante (integradores) y exponencial en retroceso. Abajo la
-% articulación: acotada hacia adelante (polo en -V/D), divergente en retroceso.
+% articulación: acotada hacia adelante (polo en -V/L2), divergente en retroceso.
 fig_escalon = figure('Name', 'Respuesta al Escalón (Lazo Abierto)', 'NumberTitle', 'off');
+fig_escalon.Position(4) = ALTO_DOBLE;
 t_sim = 0:0.05:8;
 C_theta = [0, 0, 1];
 [y_fwd, t_fwd] = step(sys_fwd, t_sim);
@@ -200,7 +210,7 @@ subplot(2, 1, 1);
 plot(t_fwd, y_fwd, 'b', 'LineWidth', 2); hold on;
 plot(t_bwd, y_bwd, 'r', 'LineWidth', 2);
 title('Respuesta al Escalón en Lazo Abierto (curvatura \kappa = 1 m^{-1})');
-ylabel('Error Lateral y_2 [m]');
+ylabel('Error lateral x_1 [m]');
 legend('Marcha hacia adelante (crecimiento polinómico)', 'Marcha en retroceso (divergencia exponencial)', ...
        'Location', 'SouthWest');
 grid on; hold off;
@@ -210,7 +220,7 @@ plot(t_fwd, th_fwd, 'b', 'LineWidth', 2); hold on;
 plot(t_bwd, th_bwd, 'r', 'LineWidth', 2);
 xlabel('Tiempo [s]');
 ylabel('Articulación \theta [rad]');
-legend('Marcha hacia adelante (acotada: polo en -V/D)', 'Marcha en retroceso (polo en +V/D: jackknife)', ...
+legend('Marcha hacia adelante (acotada: polo en -V/L_2)', 'Marcha en retroceso (polo en +V/L_2: jackknife)', ...
        'Location', 'SouthWest');
 grid on; hold off;
 
@@ -228,26 +238,50 @@ t_eq = 0:0.05:5;
 [y_po, ~] = step(sys_Po, t_eq);
 
 % Graficamos P^a con línea gruesa y P^o con línea punteada superpuesta
-plot(t_eq, y_pa, 'b', 'LineWidth', 6); hold on;
-plot(t_eq, y_po, 'r--', 'LineWidth', 2);
+plot(t_eq, y_pa, 'b', 'LineWidth', 4); hold on;
+plot(t_eq, y_po, 'r--', 'LineWidth', 1.8);
 title('Validación de Equivalencia: P^a vs P^o (Respuesta al Escalón)');
 xlabel('Tiempo [s]');
-ylabel('Amplitud [m]');
-legend('Modelo Físico Original (P^a)', 'Forma Canónica de Observabilidad (P^o)', 'Location', 'NorthWest');
+ylabel('Error lateral x_1 [m]');
+legend('Modelo Físico Original (P^a)', 'Forma Canónica de Observabilidad (P^o)', 'Location', 'SouthWest');
 grid on;
 hold off;
+
+% Respuesta en frecuencia: función de transferencia nominal G_p(s) frente a P^o
+fig_bode_po = figure('Name', 'Bode G_p vs P^o', 'NumberTitle', 'off');
+fig_bode_po.Position(4) = ALTO_DOBLE;
+w_eq = logspace(-3, 3, 600);
+[mag_g, fase_g] = bode(tf_bwd, w_eq);
+[mag_o, fase_o] = bode(sys_Po, w_eq);
+subplot(2, 1, 1);
+semilogx(w_eq, 20*log10(squeeze(mag_g)), 'b', 'LineWidth', 4); hold on;
+semilogx(w_eq, 20*log10(squeeze(mag_o)), 'r--', 'LineWidth', 1.8);
+title('Respuesta en frecuencia: G_p(s) frente a P^o');
+ylabel('Magnitud [dB]');
+legend('G_p(s), función de transferencia nominal', 'P^o, forma canónica de observabilidad', 'Location', 'SouthWest');
+grid on; hold off;
+subplot(2, 1, 2);
+semilogx(w_eq, squeeze(fase_g), 'b', 'LineWidth', 4); hold on;
+semilogx(w_eq, squeeze(fase_o), 'r--', 'LineWidth', 1.8);
+ylabel('Fase [°]');
+xlabel('Frecuencia [rad/s]');
+grid on; hold off;
 
 %% LUGAR GEOMÉTRICO DE LAS RAÍCES (ROOT LOCUS)
 figure('Name', 'Lugar Geométrico de las Raíces (Retroceso)', 'NumberTitle', 'off');
 
-% Generamos el Root Locus de la planta en retroceso (inestable)
-rlocus(sys_bwd);
-title('Lugar Geométrico de las Raíces - Marcha en Retroceso (G_{bwd})');
-
-% Embellecemos las líneas para que destaquen en el documento LaTeX
-h_rlocus = findobj(gca, 'Type', 'line');
-set(h_rlocus, 'LineWidth', 2);
-grid on;
+% Lugar de las raíces de 1 + Kp G_bwd(s) = 0 (kappa = -Kp x1, Kp >= 0), dibujado a
+% mano para controlar las etiquetas y el estilo
+k_rl = [0, logspace(-4, 2, 3000)];
+r_rl = rlocus(sys_bwd, k_rl);
+plot(real(r_rl.'), imag(r_rl.'), 'LineWidth', 2); hold on;
+p_ol = pole(sys_bwd);
+plot(real(p_ol), imag(p_ol), 'kx', 'MarkerSize', 12, 'LineWidth', 2);
+xline(0, 'k:'); yline(0, 'k:');
+title('Lugar de las raíces en retroceso (K_p \geq 0)');
+xlabel('Parte real [1/s]'); ylabel('Parte imaginaria [rad/s]');
+axis([-3, 3, -3, 3]); axis square;
+grid on; hold off;
 
 % Routh-Hurwitz para u = -Kp*x1: s^3 - 0.4 s^2 - 1.6 Kp = 0 nunca es Hurwitz
 % (coeficiente de s^2 negativo y de s nulo). Raíces para algunos Kp:
@@ -259,7 +293,7 @@ end
 %% MODELO DE DISEÑO DE 5 ESTADOS (LQR IMPLEMENTADO, backwards_lqr.py)
 % Estados: x1 error lateral del punto medido, x2 error angular, x3 articulación,
 % x4 integral de x1, x5 posición real del volante (primer orden de constante tau).
-% Entrada: comando de volante normalizado s en [-1, 1]. Mismas ecuaciones que
+% Entrada: comando de volante normalizado u en [-1, 1]. Mismas ecuaciones que
 % _construir_modelo() en backwards_lqr.py.
 disp('======================================================');
 disp('   MODELO DE DISEÑO DE 5 ESTADOS (RETROCESO, V = 2 m/s)');
@@ -351,7 +385,7 @@ plot(t_cl, y_cl, 'b', 'LineWidth', 2); hold on;
 yline(1, 'r--', 'Referencia Deseada', 'LineWidth', 2, 'LabelHorizontalAlignment', 'left');
 title('Respuesta al Escalón: LQR + Observador + Acción Integral (Retroceso)');
 xlabel('Tiempo [s]');
-ylabel('Error Lateral y_2 [m]');
+ylabel('Error lateral x_1 [m]');
 legend('Trayectoria del Tráiler compensado', 'Línea a seguir', 'Location', 'SouthEast');
 grid on;
 hold off;
@@ -377,6 +411,7 @@ exportgraphics(findobj('Type', 'figure', 'Name', 'Regiones de Loop Shaping'), ..
 exportgraphics(fig_escalon, fullfile(DIR_FIGURAS, '5_step_response_open_loop.png'), 'Resolution', 300);
 exportgraphics(findobj('Type', 'figure', 'Name', 'Equivalencia Dinámica P^a vs P^o'), ...
                fullfile(DIR_FIGURAS, '6_step_pa_vs_po.png'), 'Resolution', 300);
+exportgraphics(fig_bode_po, fullfile(DIR_FIGURAS, '7_bode_gp_vs_po.png'), 'Resolution', 300);
 exportgraphics(findobj('Type', 'figure', 'Name', 'Lugar Geométrico de las Raíces (Retroceso)'), ...
                fullfile(DIR_FIGURAS, '7_root_locus.png'), 'Resolution', 300);
 exportgraphics(fig_polos, fullfile(DIR_FIGURAS, '12_polos_modelo_diseno.png'), 'Resolution', 300);
