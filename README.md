@@ -92,7 +92,8 @@ src/
     debugging_sys.py           telemetría (CSV/JSON) y figuras de apoyo
     arnes.py                   arnés de integración sin BeamNG
 matlab/modelaje.m              modelo nominal linealizado (figuras del Capítulo 3)
-resultados/                    resultados versionados (legado/: corridas antiguas, no válidas)
+resultados/                    resultados versionados (campana_v1.0/: campaña del Capítulo 5;
+                               legado/: corridas antiguas, no válidas)
 docs/beamng/                   listados de vehículos y escenarios de BeamNG
 ```
 

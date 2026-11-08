@@ -146,7 +146,12 @@ python src\evaluacion_resultados.py --datos corridas\campana_r1 corridas\campana
 ```
 Además de `metricas.csv` (una fila por corrida, con su carpeta) escribe `metricas_agregadas.csv` (media,
 desviación estándar y número de valores por caso), y las tablas muestran media ± desviación. Las figuras se
-dibujan con la primera carpeta.
+dibujan con la primera carpeta. Si en un caso unas repeticiones capturan la ruta y otras no, las métricas de
+seguimiento de todas se calculan sobre la corrida completa, y los tiempos que solo existen en k de n corridas
+se marcan (k/n).
+
+`src\metricas_complementarias.py`, con los mismos `--datos` y `--salida`, agrega el sobrepaso de captura, el
+porcentaje de volante saturado, la amplitud relativa en las senoides y la velocidad media.
 
 Los resultados que se usen en la tesis se copian a `resultados/` (sí se versiona).
 
