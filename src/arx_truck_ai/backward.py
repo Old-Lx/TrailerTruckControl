@@ -499,7 +499,7 @@ def main():
 
     finalizar_telemetria(resultado, **info_fin)
     truck_trailer.liberar_simulacion()
-    titulo = 'Evaluación Controlador Aditivo (Marcha Atrás)' + (' Jackknife' if resultado == 'jackknife' else '')
+    titulo = 'Evaluación del controlador aditivo (marcha atrás)' + (': fin por jackknife' if resultado == 'jackknife' else '')
     generar_grafico_evaluacion(titulo=titulo)
     input('Presione enter cuando termine la simulación en reversa...')
 

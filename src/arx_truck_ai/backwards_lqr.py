@@ -528,7 +528,7 @@ def main():
     finalizar_telemetria(resultado, **info_fin)
     truck_trailer.liberar_simulacion()
     # Cuando salimos del bucle, graficamos
-    generar_grafico_evaluacion()
+    generar_grafico_evaluacion(titulo='Evaluación del controlador LQR (marcha atrás)')
     input('Presione enter cuando termine la simulación en reversa (MIMO-LQR)...')
 
 if __name__ == "__main__":

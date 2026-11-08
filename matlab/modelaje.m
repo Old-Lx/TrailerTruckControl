@@ -158,11 +158,11 @@ Wm = 0.16 * (0.1*s + 1)/(0.01*s + 1);
 h_wm = plot(w, squeeze(mag_Wm), 'r', 'LineWidth', 2.5);
 set(gca, 'XScale', 'log', 'YScale', 'log');
 
-title('Error Relativo y Cota Superior (W_m)');
-ylabel('Magnitud del Error Relativo');
+title('Error relativo y cota superior (W_m)');
+ylabel('Magnitud del error relativo');
 xlabel('Frecuencia [rad/s]');
 
-legend([h_err, h_wm], 'Familia de Errores Inciertos \Delta_{rel}', 'Cota Superior W_m(s)', 'Location', 'NorthWest');
+legend([h_err, h_wm], 'Familia de errores inciertos \Delta_{rel}', 'Cota superior W_m(s)', 'Location', 'NorthWest');
 
 grid on;
 hold off;
@@ -181,15 +181,15 @@ h_wd = loglog(w, squeeze(mag_Wd), 'b-.', 'LineWidth', 2); hold on;
 h_wm_inv = loglog(w, squeeze(mag_Wm_inv), 'r--', 'LineWidth', 2);
 h_bwd = loglog(w, squeeze(mag_bwd), 'k', 'LineWidth', 2);
 
-title('Fronteras de Loop Shaping: Desempeño vs Robustez');
+title('Fronteras de loop shaping: desempeño vs. robustez');
 xlabel('Frecuencia [rad/s]');
 ylabel('Magnitud');
 
 % Leyenda 
 legend([h_wd, h_wm_inv, h_bwd], ...
-       '|W_d(j\omega)| (Lím. Inferior / Rechazo Perturb.)', ...
-       '1 / |W_m(j\omega)| (Lím. Superior / Estabilidad Robusta)', ...
-       '|G_{bwd}(j\omega)| (Planta Lazo Abierto)', 'Location', 'SouthWest');
+       '|W_d(j\omega)| (lím. inferior / rechazo de perturbaciones)', ...
+       '1 / |W_m(j\omega)| (lím. superior / estabilidad robusta)', ...
+       '|G_{bwd}(j\omega)| (planta en lazo abierto)', 'Location', 'SouthWest');
 grid on;
 hold off;
 
@@ -209,7 +209,7 @@ th_bwd = step(ss(A_bwd, B_bwd, C_theta, 0), t_sim);
 subplot(2, 1, 1);
 plot(t_fwd, y_fwd, 'b', 'LineWidth', 2); hold on;
 plot(t_bwd, y_bwd, 'r', 'LineWidth', 2);
-title('Respuesta al Escalón en Lazo Abierto (curvatura \kappa = 1 m^{-1})');
+title('Respuesta al escalón en lazo abierto (curvatura \kappa = 1 m^{-1})');
 ylabel('Error lateral x_1 [m]');
 legend('Marcha hacia adelante (crecimiento polinómico)', 'Marcha en retroceso (divergencia exponencial)', ...
        'Location', 'SouthWest');
@@ -240,10 +240,10 @@ t_eq = 0:0.05:5;
 % Graficamos P^a con línea gruesa y P^o con línea punteada superpuesta
 plot(t_eq, y_pa, 'b', 'LineWidth', 4); hold on;
 plot(t_eq, y_po, 'r--', 'LineWidth', 1.8);
-title('Validación de Equivalencia: P^a vs P^o (Respuesta al Escalón)');
+title('Validación de equivalencia: P^a vs. P^o (respuesta al escalón)');
 xlabel('Tiempo [s]');
 ylabel('Error lateral x_1 [m]');
-legend('Modelo Físico Original (P^a)', 'Forma Canónica de Observabilidad (P^o)', 'Location', 'SouthWest');
+legend('Modelo físico original (P^a)', 'Forma canónica de observabilidad (P^o)', 'Location', 'SouthWest');
 grid on;
 hold off;
 

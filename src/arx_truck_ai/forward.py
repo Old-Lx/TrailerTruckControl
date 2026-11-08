@@ -251,7 +251,7 @@ def main():
 
     finalizar_telemetria(resultado, **info_fin)
     truck_trailer.liberar_simulacion()
-    generar_grafico_evaluacion(titulo='Evaluación Controlador Proporcional (Marcha Adelante)')
+    generar_grafico_evaluacion(titulo='Evaluación del controlador de marcha adelante')
     input('Presione enter cuando termine la simulación...')
 
     # Disconnect BeamNG
